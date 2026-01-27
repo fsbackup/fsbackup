@@ -2,155 +2,102 @@
 set -euo pipefail
 
 # =============================================================================
-# fsbackup remote SSH bootstrap
+# fsbackup-remote-init.sh
 #
-# SAFE FOR NODE_EXPORTER TEXTFILE COLLECTOR
+# Prepares a remote host for fsbackup pulls via SSH + rsync
+# while preserving node_exporter patch metrics permissions.
 #
-# Run as root on REMOTE HOST
+# SAFE TO RE-RUN
 # =============================================================================
 
 # -----------------------------
-# Accounts & groups
+# CONFIG
 # -----------------------------
 BACKUP_USER="backup"
-PATCHCHECK_USER="patchcheck"
+BACKUP_GROUP="backup"
 NODEEXP_GROUP="nodeexp_txt"
+PATCH_USER="patchcheck"
 
-BACKUP_HOME="/home/${BACKUP_USER}"
-BACKUP_SHELL="/usr/sbin/nologin"
+SSH_DIR="/home/${BACKUP_USER}/.ssh"
+AUTHORIZED_KEYS="${SSH_DIR}/authorized_keys"
 
 NODE_EXPORTER_TEXTFILE="/var/lib/node_exporter/textfile_collector"
+PROM_FILE="${NODE_EXPORTER_TEXTFILE}/fsbackup_remote_init.prom"
 
-# ---------------------------------------------------------------------
-# EMBEDDED PUBLIC KEY (REPLACE THIS)
-# ---------------------------------------------------------------------
-FSBACKUP_PUBKEY='ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEJwT7RbHgoeGRTQfF/bbdtJJ6+WBfteTH5jYTzZUUcc fsbackup@fs'
-
-echo "== fsbackup remote bootstrap (node_exporter safe) =="
+# ⚠️ REPLACE THIS KEY
+FSBACKUP_PUBKEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEJwT7RbHgoeGRTQfF/bbdtJJ6+WBfteTH5jYTzZUUcc fsbackup@backup-host"
 
 # -----------------------------
-# Ensure shared node exporter group
+# Sanity
 # -----------------------------
-if ! getent group "$NODEEXP_GROUP" >/dev/null; then
-  groupadd "$NODEEXP_GROUP"
-  echo "Created group: $NODEEXP_GROUP"
-else
-  echo "Group exists: $NODEEXP_GROUP"
-fi
+[[ $EUID -eq 0 ]] || { echo "ERROR: must be run as root"; exit 1; }
 
 # -----------------------------
-# Ensure backup user
+# Backup user
 # -----------------------------
-if ! id "$BACKUP_USER" &>/dev/null; then
+getent group "$BACKUP_GROUP" >/dev/null || groupadd "$BACKUP_GROUP"
+
+if ! id "$BACKUP_USER" >/dev/null 2>&1; then
   useradd \
-    --home "$BACKUP_HOME" \
+    --system \
+    --home "/home/${BACKUP_USER}" \
     --create-home \
-    --shell "$BACKUP_SHELL" \
+    --shell /usr/sbin/nologin \
+    --gid "$BACKUP_GROUP" \
     "$BACKUP_USER"
-  echo "Created user: $BACKUP_USER"
-else
-  echo "User exists: $BACKUP_USER"
 fi
 
-# Unlock (nologin is fine, but account must not be locked)
-passwd -u "$BACKUP_USER" >/dev/null || true
-usermod -s "$BACKUP_SHELL" "$BACKUP_USER"
+usermod -s /usr/sbin/nologin "$BACKUP_USER"
 
 # -----------------------------
-# Ensure patchcheck user exists
-# (do NOT modify shell / behavior)
+# SSH setup
 # -----------------------------
-if ! id "$PATCHCHECK_USER" &>/dev/null; then
-  echo "WARNING: patchcheck user not found (skipping user creation)"
-else
-  echo "User exists: $PATCHCHECK_USER"
+install -d -o "$BACKUP_USER" -g "$BACKUP_GROUP" -m 0700 "$SSH_DIR"
+
+touch "$AUTHORIZED_KEYS"
+chown "$BACKUP_USER:$BACKUP_GROUP" "$AUTHORIZED_KEYS"
+chmod 600 "$AUTHORIZED_KEYS"
+
+if ! grep -qF "$FSBACKUP_PUBKEY" "$AUTHORIZED_KEYS"; then
+  echo "$FSBACKUP_PUBKEY" >>"$AUTHORIZED_KEYS"
 fi
 
 # -----------------------------
-# Group membership (CRITICAL)
+# node_exporter shared access
 # -----------------------------
+groupadd -f "$NODEEXP_GROUP"
+
+usermod -aG "$NODEEXP_GROUP" "$PATCH_USER" 2>/dev/null || true
 usermod -aG "$NODEEXP_GROUP" "$BACKUP_USER"
 
-if id "$PATCHCHECK_USER" &>/dev/null; then
-  usermod -aG "$NODEEXP_GROUP" "$PATCHCHECK_USER"
-fi
+install -d -o root -g "$NODEEXP_GROUP" -m 2775 "$NODE_EXPORTER_TEXTFILE"
+
+setfacl -m g:"$NODEEXP_GROUP":rwx "$NODE_EXPORTER_TEXTFILE"
+setfacl -d -m g:"$NODEEXP_GROUP":rwx "$NODE_EXPORTER_TEXTFILE"
 
 # -----------------------------
-# SSH setup for backup user
+# Prometheus metric
 # -----------------------------
-install -d -m 700 -o "$BACKUP_USER" -g "$BACKUP_USER" "$BACKUP_HOME/.ssh"
-touch "$BACKUP_HOME/.ssh/authorized_keys"
-chown "$BACKUP_USER:$BACKUP_USER" "$BACKUP_HOME/.ssh/authorized_keys"
-chmod 600 "$BACKUP_HOME/.ssh/authorized_keys"
-
-if ! grep -qxF "$FSBACKUP_PUBKEY" "$BACKUP_HOME/.ssh/authorized_keys"; then
-  echo "$FSBACKUP_PUBKEY" >>"$BACKUP_HOME/.ssh/authorized_keys"
-  echo "Installed fsbackup SSH key"
-else
-  echo "fsbackup SSH key already present"
-fi
-
-# -----------------------------
-# node_exporter textfile permissions
-# -----------------------------
-mkdir -p "$NODE_EXPORTER_TEXTFILE"
-
-# Ownership stays root for safety
-chown root:"$NODEEXP_GROUP" "$NODE_EXPORTER_TEXTFILE"
-chmod 2775 "$NODE_EXPORTER_TEXTFILE"   # setgid so files inherit group
-
-# ACLs: allow both services full access
-setfacl -m "g:${NODEEXP_GROUP}:rwx" "$NODE_EXPORTER_TEXTFILE"
-setfacl -d -m "g:${NODEEXP_GROUP}:rwx" "$NODE_EXPORTER_TEXTFILE"
-
-# -----------------------------
-# Verify write access (non-fatal)
-# -----------------------------
-echo "Verifying node_exporter write access..."
-
-sudo -u "$BACKUP_USER" touch "$NODE_EXPORTER_TEXTFILE/.backup_test" && rm -f "$NODE_EXPORTER_TEXTFILE/.backup_test"
-
-if id "$PATCHCHECK_USER" &>/dev/null; then
-  sudo -u "$PATCHCHECK_USER" touch "$NODE_EXPORTER_TEXTFILE/.patchcheck_test" && rm -f "$NODE_EXPORTER_TEXTFILE/.patchcheck_test"
-fi
-
-# -----------------------------
-# SSHD hardening (safe drop-in)
-# -----------------------------
-SSHD_DROPIN="/etc/ssh/sshd_config.d/fsbackup.conf"
-
-cat >"$SSHD_DROPIN" <<EOF
-PubkeyAuthentication yes
-PasswordAuthentication no
-PermitEmptyPasswords no
-PermitRootLogin no
-AllowUsers ${BACKUP_USER}
+cat >"$PROM_FILE" <<EOF
+# HELP fsbackup_remote_init_ok Remote fsbackup SSH setup completed
+# TYPE fsbackup_remote_init_ok gauge
+fsbackup_remote_init_ok 1
 EOF
 
-chmod 644 "$SSHD_DROPIN"
-
-if systemctl is-active ssh >/dev/null 2>&1; then
-  systemctl reload ssh
-elif systemctl is-active sshd >/dev/null 2>&1; then
-  systemctl reload sshd
-fi
+chown root:"$NODEEXP_GROUP" "$PROM_FILE"
+chmod 664 "$PROM_FILE"
 
 # -----------------------------
-# Summary
+# Verifier (single-line contract check)
 # -----------------------------
-echo
-echo "Remote fsbackup bootstrap complete"
-echo
-echo "Users:"
-echo "  - backup      (SSH access)"
-echo "  - patchcheck  (unchanged)"
-echo
-echo "Shared group:"
-echo "  - $NODEEXP_GROUP"
-echo
-echo "Textfile collector:"
-echo "  $NODE_EXPORTER_TEXTFILE"
-echo
-echo "Test from backup host:"
-echo "  sudo -u fsbackup ssh backup@$(hostname -f) 'echo ssh-ok'"
+getent group "$NODEEXP_GROUP" >/dev/null \
+  && getfacl "$NODE_EXPORTER_TEXTFILE" | grep -q "group:${NODEEXP_GROUP}:rwx" \
+  || { echo "ERROR: nodeexp_txt ACL misconfigured"; exit 1; }
+
+# -----------------------------
+# Done
+# -----------------------------
+echo "Remote fsbackup init complete."
+echo "Backup user:      $BACKUP_USER"
+echo "Node exporter OK: $NODE_EXPORTER_TEXTFILE"
 
