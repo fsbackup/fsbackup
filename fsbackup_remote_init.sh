@@ -25,7 +25,7 @@ NODE_EXPORTER_TEXTFILE="/var/lib/node_exporter/textfile_collector"
 PROM_FILE="${NODE_EXPORTER_TEXTFILE}/fsbackup_remote_init.prom"
 
 # ⚠️ REPLACE THIS KEY
-FSBACKUP_PUBKEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEJwT7RbHgoeGRTQfF/bbdtJJ6+WBfteTH5jYTzZUUcc fsbackup@backup-host"
+FSBACKUP_PUBKEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEJwT7RbHgoeGRTQfF/bbdtJJ6+WBfteTH5jYTzZUUcc fsbackup@fs"
 
 # -----------------------------
 # Sanity
