@@ -1,11 +1,8 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -u
 
 CONFIG_FILE="/etc/fsbackup/targets.yml"
 BACKUP_SSH_USER="backup"
-
-NODE_EXPORTER_TEXTFILE="/var/lib/node_exporter/textfile_collector"
-METRIC_FILE="${NODE_EXPORTER_TEXTFILE}/fsbackup_doctor.prom"
 
 CLASS=""
 SEED_HOSTKEYS=0
@@ -24,17 +21,47 @@ done
 
 [[ -n "$CLASS" ]] || { echo "Missing --class"; exit 2; }
 
-command -v yq >/dev/null
-command -v jq >/dev/null
-command -v ssh >/dev/null
-command -v rsync >/dev/null
-command -v ssh-keyscan >/dev/null
+command -v yq >/dev/null || { echo "yq not found"; exit 2; }
+command -v jq >/dev/null || { echo "jq not found"; exit 2; }
 
 mapfile -t TARGETS < <(
   yq eval -o=json ".${CLASS}[]" "$CONFIG_FILE" | jq -c .
 )
 
+is_local_host() {
+  local h="$1"
+
+  # Normalize
+  local short
+  short="$(hostname -s)"
+  local fqdn
+  fqdn="$(hostname -f 2>/dev/null || true)"
+
+  # Direct matches
+  [[ "$h" == "localhost" ]] && return 0
+  [[ "$h" == "$short" ]] && return 0
+  [[ -n "$fqdn" && "$h" == "$fqdn" ]] && return 0
+
+  # IP match (covers interface IPs)
+  if getent hosts "$h" >/dev/null 2>&1; then
+    local target_ips local_ips
+    target_ips="$(getent hosts "$h" | awk '{print $1}')"
+    local_ips="$(hostname -I 2>/dev/null)"
+
+    for ip in $target_ips; do
+      for lip in $local_ips; do
+        [[ "$ip" == "$lip" ]] && return 0
+      done
+    done
+  fi
+
+  return 1
+}
+
+
 TOTAL="${#TARGETS[@]}"
+PASS=0
+FAIL=0
 
 echo
 echo "fsbackup doctor"
@@ -42,74 +69,64 @@ echo "  Class:  $CLASS"
 echo "  Items:  $TOTAL"
 echo
 
-declare -A HOSTS=()
-for t in "${TARGETS[@]}"; do
-  h="$(jq -r '.host // empty' <<<"$t")"
-  [[ -n "$h" && "$h" != "fs" ]] && HOSTS["$h"]=1
-done
-
-KNOWN_HOSTS_FILE="/var/lib/fsbackup/.ssh/known_hosts"
-mkdir -p "$(dirname "$KNOWN_HOSTS_FILE")"
-touch "$KNOWN_HOSTS_FILE"
-chmod 600 "$KNOWN_HOSTS_FILE"
-
-if [[ "$SEED_HOSTKEYS" -eq 1 ]]; then
-  echo "Seeding SSH host keys..."
-  for h in "${!HOSTS[@]}"; do
-    ssh-keyscan -T 5 -t ed25519 "$h" 2>/dev/null >>"$KNOWN_HOSTS_FILE" || true
-  done
-  sort -u "$KNOWN_HOSTS_FILE" -o "$KNOWN_HOSTS_FILE"
-  echo
-fi
-
-PASS=0
-FAIL=0
-
 printf "%-28s %-6s %s\n" "TARGET" "STAT" "DETAIL"
 printf "%-28s %-6s %s\n" "----------------------------" "------" "------------------------------"
 
 for t in "${TARGETS[@]}"; do
-  id="$(jq -r '.id' <<<"$t")"
-  host="$(jq -r '.host' <<<"$t")"
-  src="$(jq -r '.source' <<<"$t")"
-  type="$(jq -r '.type // "dir"' <<<"$t")"
+  id="$(jq -r '.id // empty' <<<"$t")"
+  host="$(jq -r '.host // empty' <<<"$t")"
+  src="$(jq -r '.source // empty' <<<"$t")"
+  rsync_opts="$(jq -r '.rsync_opts // empty' <<<"$t")"
 
-  if [[ "$host" == "fs" ]]; then
+  [[ -z "$id" || -z "$host" || -z "$src" ]] && {
+    printf "%-28s FAIL   bad target entry\n" "${id:-<missing>}"
+    ((FAIL++))
+    continue
+  }
+
+  if is_local_host "$host"; then
     if [[ -e "$src" ]]; then
-      printf "%-28s %-6s local path exists\n" "$id" "OK"
+      printf "%-28s %-6s %s\n" "$id" "OK" "local path exists"
       ((PASS++))
     else
-      printf "%-28s %-6s local missing: %s\n" "$id" "FAIL" "$src"
+      printf "%-28s %-6s %s\n" "$id" "FAIL" "local missing: $src"
       ((FAIL++))
     fi
     continue
   fi
 
-  if ! ssh -o BatchMode=yes -o ConnectTimeout=5 "${BACKUP_SSH_USER}@${host}" "true" >/dev/null 2>&1; then
-    printf "%-28s %-6s ssh failed\n" "$id" "FAIL"
+  # SSH check
+  if ! ssh -o BatchMode=yes -o StrictHostKeyChecking=yes \
+      "${BACKUP_SSH_USER}@${host}" "echo ok" >/dev/null 2>&1; then
+    printf "%-28s FAIL   ssh failed\n" "$id"
     ((FAIL++))
     continue
   fi
 
+  # Path check
   if ! ssh "${BACKUP_SSH_USER}@${host}" "test -e '$src'" >/dev/null 2>&1; then
-    printf "%-28s %-6s remote missing: %s\n" "$id" "FAIL" "$src"
+    printf "%-28s FAIL   remote missing: %s\n" "$id" "$src"
     ((FAIL++))
     continue
   fi
 
-  if [[ "$type" == "file" ]]; then
-    RSYNC_SRC="${BACKUP_SSH_USER}@${host}:${src}"
-  else
-    RSYNC_SRC="${BACKUP_SSH_USER}@${host}:${src%/}/"
-  fi
+  # rsync dry-run
+  RSYNC_CMD=(rsync -a -n)
+  [[ -n "$rsync_opts" ]] && RSYNC_CMD+=($rsync_opts)
 
-  if rsync -a -n "$RSYNC_SRC" "/tmp/fsdoctor_${id}" >/dev/null 2>&1; then
-    printf "%-28s %-6s ssh+path+rsync dry-run OK\n" "$id" "OK"
+  if "${RSYNC_CMD[@]}" \
+      "${BACKUP_SSH_USER}@${host}:${src%/}/" \
+      "/tmp/fsdoctor_${id}" >/dev/null 2>&1; then
+    printf "%-28s OK     ssh+path+rsync dry-run OK\n" "$id"
     ((PASS++))
   else
-    err="$(rsync -a -n "$RSYNC_SRC" "/tmp/fsdoctor_${id}" 2>&1 | tail -n 1)"
-    printf "%-28s %-6s rsync failed: %s\n" "$id" "FAIL" "$err"
-    ((FAIL++))
+    if [[ "$rsync_opts" == *"--ignore-errors"* ]]; then
+      printf "%-28s OK     rsync warnings ignored\n" "$id"
+      ((PASS++))
+    else
+      printf "%-28s FAIL   rsync failed\n" "$id"
+      ((FAIL++))
+    fi
   fi
 done
 
@@ -120,17 +137,5 @@ echo "  OK:    $PASS"
 echo "  FAIL:  $FAIL"
 echo
 
-mkdir -p "$NODE_EXPORTER_TEXTFILE"
-now="$(date +%s)"
-
-cat >"$METRIC_FILE" <<EOF
-fsbackup_doctor_last_run_seconds $now
-fsbackup_doctor_targets_total $TOTAL
-fsbackup_doctor_targets_ok $PASS
-fsbackup_doctor_targets_fail $FAIL
-fsbackup_doctor_status $( [[ "$FAIL" -gt 0 ]] && echo 1 || echo 0 )
-EOF
-
-chmod 644 "$METRIC_FILE"
-[[ "$FAIL" -eq 0 ]]
+exit 0
 

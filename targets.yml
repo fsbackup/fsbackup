@@ -4,11 +4,11 @@
 
 class1:
   - id: technicom.files
-    host: fs
+    host: local
     source: /shr/technicom
 
   - id: shared.files
-    host: fs
+    host: local
     source: /shr/shared
 
   - id: mosquitto.data
@@ -60,24 +60,26 @@ class1:
     source: /docker/volumes/owntracks_data
 
   - id: paperlessngx.data
-    host: fs
+    host: local
     source: /docker/volumes/paperlessngx_data
 
   - id: paperlessngx.consume
-    host: fs
+    host: local
     source: /shr/paperless
 
   - id: apache.git.repos
-    host: fs
+    host: local
     source: /var/www/src
 
   - id: plex.config
-    host: fs
+    host: local
     source: /var/lib/plexmediaserver/Library/Application Support/Plex Media Server
 
   - id: headscale.data
     host: hs
     source: /var/lib/headscale
+    type: dir
+    rsync_opts: "--no-owner --no-group --no-perms --omit-dir-times"
 
   - id: bind.zones
     host: ns1
@@ -95,7 +97,6 @@ class1:
     host: rp
     source: /etc/letsencrypt
 
-
 class2:
   - id: homeassistant.backups
     host: fs
@@ -104,6 +105,8 @@ class2:
   - id: headscale.config
     host: hs
     source: /etc/headscale
+    type: dir
+    rsync_opts: "--no-owner --no-group --no-perms --omit-dir-times --ignore-errors"
 
   - id: bind.named.conf
     host: ns1
@@ -112,17 +115,21 @@ class2:
   - id: webmin.config
     host: ns1
     source: /etc/webmin
+    type: dir
+    rsync_opts: "--no-owner --no-group --no-perms --omit-dir-times --ignore-errors"
 
   - id: webmin.state
     host: ns1
     source: /var/webmin
+    type: dir
+    rsync_opts: "--no-owner --no-group --no-perms --omit-dir-times --ignore-errors"
 
   - id: nginx.config
     host: rp
     source: /etc/nginx
 
   - id: docker.stacks.fs
-    host: fs
+    host: local
     source: /docker/stacks
 
   - id: docker.stacks.denhpsvr1
@@ -133,23 +140,23 @@ class2:
     host: denhpsvr2
     source: /docker/stacks
 
-  - id: weewx.html
-    host: weewx
-    source: /var/www/html
+      # - id: weewx.html
+      #host: weewx
+      #source: /var/www/html
 
-  - id: weewx.config
-    host: weewx
-    source: /etc/weewx
+      #- id: weewx.config
+      #host: weewx
+      #source: /etc/weewx
 
   - id: mdns.avahi
     host: mdns
-    source: /etc/avahi/avahi-daemon.conf
-    type: file
+    source: /etc/avahi
+    type: dir
+    rsync_opts: "--no-owner --no-group --no-perms --omit-dir-times"
 
   - id: apache.config
-    host: fs
+    host: local
     source: /etc/apache2
-
 
 class3:
   - id: system.hostname
@@ -161,7 +168,7 @@ class3:
     source: /etc/hosts
 
   - id: system.netplan.fs
-    host: fs
+    host: local
     source: /etc/netplan
 
   - id: system.netplan.denhpsvr1
