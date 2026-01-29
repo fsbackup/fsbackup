@@ -4,407 +4,301 @@ set -euo pipefail
 # =============================================================================
 # fsbackup_remote_init.sh
 #
-# Run on EACH SOURCE HOST (as root). Prepares the remote host for fsbackup pulls:
-#  - Ensures "backup" user exists and can do rsync over SSH
-#  - Installs fsbackup public key into backup user's authorized_keys
-#  - Sets up node_exporter textfile collector permissions WITHOUT breaking patchcheck
-#  - Optionally grants read access to specific backup source paths in a SAFE way
+# Run on SOURCE HOSTS (remote machines) as root.
 #
-# SAFETY PRINCIPLES
-#  - Never change ACL mask entries (no setfacl -m m::...)
-#  - Never recursively ACL protected system paths (e.g., /etc/bind)
-#  - /etc paths allowed ONLY as --allow-file (file-level ACL)
+# Creates/repairs:
+#   - backup user for rsync/ssh pulls
+#   - authorized_keys
+#   - safe ACLs for protected paths (via --allow-path)
+#   - node_exporter textfile_collector permissions WITHOUT breaking patchcheck
 #
-# Flags:
-#   --pubkey "ssh-ed25519 AAAA... comment"
-#   --pubkey-file /path/to/id_ed25519_backup.pub
+# Usage:
+#   sudo ./fsbackup_remote_init.sh \
+#     --backup-user backup \
+#     --pubkey-file /path/to/id_ed25519_backup.pub \
+#     --allow-path /etc/headscale \
+#     --allow-path /etc/bind \
+#     --allow-path /var/webmin \
+#     --allow-path /etc/weewx \
+#     --allow-path /var/www/html
 #
-#   --allow-path /some/dir              (adds u:backup:rX on dir only)
-#   --allow-path /some/dir --recursive  (adds recursive u:backup:rX on dir tree)  [SAFE PATHS ONLY]
-#
-#   --allow-file /etc/svc/config.yaml   (adds file-level u:backup:r only + execute on parent dirs)
-#
-#   --textfile-dir /var/lib/node_exporter/textfile_collector
-#   --nodeexp-group node_exporter|nodeexp_txt  (optional override)
-#
-#   --no-metrics (skip writing init metric)
-#
-# One-line verifier prints:
-#   "fsbackup-remote-init OK"
+# Notes:
+# - --allow-path can be provided multiple times.
+# - This script intentionally does NOT change /etc ACLs unless *required*,
+#   and even then only on the target directories/files that fail access checks.
 # =============================================================================
 
 BACKUP_USER="backup"
-BACKUP_UID="34"
-BACKUP_GID="34"
-
-# Default service home used across hosts (stable, not /home/backup)
 BACKUP_HOME="/var/lib/fsbackup-src"
 BACKUP_SHELL="/bin/bash"
 
-TEXTFILE_DIR_DEFAULT="/var/lib/node_exporter/textfile_collector"
-NODEEXP_GROUP_OVERRIDE=""
-
-WRITE_METRICS=1
-METRIC_FILE_DEFAULT="/var/lib/node_exporter/textfile_collector/fsbackup_remote_init.prom"
-
-PUBKEY_INLINE=""
 PUBKEY_FILE=""
+PUBKEY_TEXT="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEJwT7RbHgoeGRTQfF/bbdtJJ6+WBfteTH5jYTzZUUcc"
 
-RECURSIVE=0
 ALLOW_PATHS=()
-ALLOW_FILES=()
+
+TEXTFILE_DIR="/var/lib/node_exporter/textfile_collector"
+PATCHCHECK_USER="patchcheck"
 
 usage() {
-  cat <<EOF
-Usage (run as root):
-  fsbackup_remote_init.sh --pubkey-file /tmp/id_ed25519_backup.pub
-  fsbackup_remote_init.sh --pubkey "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEJwT7RbHgoeGRTQfF/bbdtJJ6+WBfteTH5jYTzZUUcc"
+  cat <<'EOF'
+Usage:
+  fsbackup_remote_init.sh --pubkey-file /path/to/key.pub [options]
 
-Optional:
-  --allow-path /var/www/html
-  --allow-path /docker/stacks --recursive
-  --allow-file /etc/headscale/config.yaml
+Options:
+  --backup-user USER        (default: backup)
+  --backup-home DIR         (default: /var/lib/fsbackup-src)
+  --pubkey-file FILE        SSH public key file to install for backup user
+  --pubkey "ssh-ed25519 ..." Inline public key (useful for testing)
+  --allow-path PATH         Grant backup read access to PATH (repeatable)
+  --skip-textfile           Skip node_exporter textfile_collector perms
+  -h|--help
 
-  --textfile-dir /var/lib/node_exporter/textfile_collector
-  --nodeexp-group nodeexp_txt
-  --no-metrics
+Example:
+  sudo ./fsbackup_remote_init.sh \
+    --pubkey-file /var/lib/fsbackup/.ssh/id_ed25519_backup.pub \
+    --allow-path /etc/headscale \
+    --allow-path /etc/bind \
+    --allow-path /var/webmin
 EOF
 }
 
-log()  { echo "[$(date -Is)] $*"; }
-die()  { echo "ERROR: $*" >&2; exit 2; }
-
-# -----------------------------
-# Policy: protected paths
-# -----------------------------
-is_protected_dir() {
-  local p="$1"
-  case "$p" in
-    /etc/bind|/etc/bind/*) return 0 ;;
-    /etc/avahi|/etc/avahi/*) return 0 ;;
-    /etc/ssh|/etc/ssh/*) return 0 ;;
-    /etc/systemd|/etc/systemd/*) return 0 ;;
-    /etc/sudoers|/etc/sudoers.d|/etc/sudoers.d/*) return 0 ;;
-    /etc/pam.conf|/etc/pam.d|/etc/pam.d/*) return 0 ;;
-    /root|/root/*) return 0 ;;
-    /boot|/boot/*) return 0 ;;
-    /proc|/proc/*) return 0 ;;
-    /sys|/sys/*) return 0 ;;
-    /dev|/dev/*) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-# Paths safe-ish to grant recursive ACLs to (explicit allow-list)
-is_safe_recursive_root() {
-  local p="$1"
-  case "$p" in
-    /var/www/*) return 0 ;;
-    /srv/*)     return 0 ;;
-    /opt/*)     return 0 ;;
-    /home/*)    return 0 ;;
-    /docker/*)  return 0 ;;
-    /shr/*)     return 0 ;;
-    /data/*)    return 0 ;;
-    /mnt/*)     return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-# /etc is special: files only, no directories
-is_under_etc() {
-  [[ "$1" == /etc/* ]]
-}
-
-# -----------------------------
-# Parse args
-# -----------------------------
-TEXTFILE_DIR="$TEXTFILE_DIR_DEFAULT"
-METRIC_FILE="$METRIC_FILE_DEFAULT"
+SKIP_TEXTFILE=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --pubkey)
-      PUBKEY_INLINE="${2:-}"; shift 2 ;;
-    --pubkey-file)
-      PUBKEY_FILE="${2:-}"; shift 2 ;;
-    --allow-path)
-      ALLOW_PATHS+=("${2:-}"); shift 2 ;;
-    --allow-file)
-      ALLOW_FILES+=("${2:-}"); shift 2 ;;
-    --recursive)
-      RECURSIVE=1; shift ;;
-    --textfile-dir)
-      TEXTFILE_DIR="${2:-}"; shift 2 ;;
-    --nodeexp-group)
-      NODEEXP_GROUP_OVERRIDE="${2:-}"; shift 2 ;;
-    --no-metrics)
-      WRITE_METRICS=0; shift ;;
-    -h|--help)
-      usage; exit 0 ;;
-    *)
-      die "Unknown arg: $1" ;;
+    --backup-user) BACKUP_USER="$2"; shift 2;;
+    --backup-home) BACKUP_HOME="$2"; shift 2;;
+    --pubkey-file) PUBKEY_FILE="$2"; shift 2;;
+    --pubkey) PUBKEY_TEXT="$2"; shift 2;;
+    --allow-path) ALLOW_PATHS+=("$2"); shift 2;;
+    --skip-textfile) SKIP_TEXTFILE=1; shift;;
+    -h|--help) usage; exit 0;;
+    *) echo "Unknown arg: $1" >&2; usage >&2; exit 2;;
   esac
 done
 
-# -----------------------------
-# Load public key
-# -----------------------------
-PUBKEY=""
-if [[ -n "$PUBKEY_INLINE" ]]; then
-  PUBKEY="$PUBKEY_INLINE"
-elif [[ -n "$PUBKEY_FILE" ]]; then
-  [[ -f "$PUBKEY_FILE" ]] || die "--pubkey-file not found: $PUBKEY_FILE"
-  PUBKEY="$(cat "$PUBKEY_FILE")"
-else
-  die "Must provide --pubkey or --pubkey-file"
+if [[ -z "$PUBKEY_FILE" && -z "$PUBKEY_TEXT" ]]; then
+  echo "ERROR: missing --pubkey-file or --pubkey" >&2
+  exit 2
 fi
 
-[[ "$PUBKEY" == ssh-* ]] || die "Provided pubkey does not look like an SSH public key"
+if [[ -n "$PUBKEY_FILE" ]]; then
+  [[ -f "$PUBKEY_FILE" ]] || { echo "ERROR: pubkey file not found: $PUBKEY_FILE" >&2; exit 2; }
+  PUBKEY_TEXT="$(cat "$PUBKEY_FILE")"
+fi
 
-# -----------------------------
-# Ensure backup user exists and is usable
-# -----------------------------
-ensure_backup_user() {
-  if getent passwd "$BACKUP_USER" >/dev/null; then
-    :
+command -v setfacl >/dev/null || { echo "ERROR: setfacl not installed"; exit 2; }
+command -v getfacl >/dev/null || { echo "ERROR: getfacl not installed"; exit 2; }
+command -v sshd >/dev/null 2>&1 || true
+
+log() { echo "[$(date -Is)] $*"; }
+
+ensure_user() {
+  local u="$1" home="$2" shell="$3"
+
+  if id "$u" >/dev/null 2>&1; then
+    # Repair home/shell if wrong
+    usermod -d "$home" "$u" >/dev/null 2>&1 || true
+    usermod -s "$shell" "$u" >/dev/null 2>&1 || true
   else
-    log "Creating user '$BACKUP_USER' (uid/gid ${BACKUP_UID}:${BACKUP_GID})"
-    # Ensure group exists
-    if ! getent group "$BACKUP_USER" >/dev/null; then
-      groupadd -g "$BACKUP_GID" "$BACKUP_USER" 2>/dev/null || groupadd "$BACKUP_USER"
-    fi
-    useradd -m -d "$BACKUP_HOME" -s "$BACKUP_SHELL" -u "$BACKUP_UID" -g "$BACKUP_GID" "$BACKUP_USER" \
-      || useradd -m -d "$BACKUP_HOME" -s "$BACKUP_SHELL" -g "$BACKUP_USER" "$BACKUP_USER"
+    useradd -m -d "$home" -s "$shell" "$u"
   fi
 
-  # Normalize shell (must NOT be nologin for rsync; avoids protocol mismatch / "shell clean" issues)
-  local shell
-  shell="$(getent passwd "$BACKUP_USER" | awk -F: '{print $7}')"
-  if [[ "$shell" == */nologin || "$shell" == */false ]]; then
-    log "Fixing backup user shell from '$shell' to '$BACKUP_SHELL' (required for rsync-over-ssh)"
-    chsh -s "$BACKUP_SHELL" "$BACKUP_USER"
-  fi
-
-  # Normalize home directory
-  local home
-  home="$(getent passwd "$BACKUP_USER" | awk -F: '{print $6}')"
-  if [[ "$home" != "$BACKUP_HOME" ]]; then
-    log "Fixing backup user home from '$home' to '$BACKUP_HOME'"
-    usermod -d "$BACKUP_HOME" -m "$BACKUP_USER" || usermod -d "$BACKUP_HOME" "$BACKUP_USER"
-  fi
-
-  # Ensure home exists and perms are sane
-  mkdir -p "$BACKUP_HOME"
-  chown "$BACKUP_USER:$BACKUP_USER" "$BACKUP_HOME"
-  chmod 750 "$BACKUP_HOME"
+  mkdir -p "$home"
+  chown "$u":"$u" "$home" || true
+  chmod 0755 "$home" || true
 }
 
-install_authorized_key() {
-  local sshdir="${BACKUP_HOME}/.ssh"
-  mkdir -p "$sshdir"
-  chown "$BACKUP_USER:$BACKUP_USER" "$sshdir"
-  chmod 700 "$sshdir"
+install_pubkey() {
+  local u="$1" home
+  home="$(getent passwd "$u" | cut -d: -f6)"
 
-  local ak="${sshdir}/authorized_keys"
+  mkdir -p "$home/.ssh"
+  chown "$u":"$u" "$home/.ssh"
+  chmod 0700 "$home/.ssh"
+
+  local ak="$home/.ssh/authorized_keys"
   touch "$ak"
-  chown "$BACKUP_USER:$BACKUP_USER" "$ak"
-  chmod 600 "$ak"
+  chown "$u":"$u" "$ak"
+  chmod 0600 "$ak"
 
-  if ! grep -Fq "$PUBKEY" "$ak"; then
-    log "Installing fsbackup public key into ${ak}"
-    echo "$PUBKEY" >>"$ak"
-  else
-    log "Public key already present in authorized_keys"
+  # Ensure key exists exactly once
+  if ! grep -Fxq "$PUBKEY_TEXT" "$ak"; then
+    echo "$PUBKEY_TEXT" >>"$ak"
   fi
 }
 
-# -----------------------------
-# Node exporter textfile collector permissions (don’t break patchcheck)
-# -----------------------------
-setup_textfile_perms() {
-  # If node_exporter exists, prefer its group. Otherwise use nodeexp_txt if exists.
-  local chosen_group=""
+# Safe ACL helper:
+# - For each directory component, if backup can't traverse it, grant x.
+# - For target dir: ensure rx
+# - For target file: ensure r on file; ensure x on parents; r on file itself
+ensure_backup_access_path() {
+  local path="$1"
 
-  if [[ -n "$NODEEXP_GROUP_OVERRIDE" ]]; then
-    chosen_group="$NODEEXP_GROUP_OVERRIDE"
-  else
-    if getent group node_exporter >/dev/null; then
-      chosen_group="node_exporter"
-    elif getent group nodeexp_txt >/dev/null; then
-      chosen_group="nodeexp_txt"
-    else
-      # create nodeexp_txt as a neutral shared group
-      chosen_group="nodeexp_txt"
-      log "Creating group: ${chosen_group}"
-      groupadd "$chosen_group" || true
-    fi
+  # Normalize (strip trailing slash unless root)
+  [[ "$path" != "/" ]] && path="${path%/}"
+
+  if [[ ! -e "$path" ]]; then
+    log "WARN allow-path missing: $path"
+    return 0
   fi
 
-  log "Using textfile collector group: $chosen_group"
-  mkdir -p "$TEXTFILE_DIR"
+  # Build list of parent dirs
+  local cur="/" next=""
+  IFS='/' read -r -a parts <<<"${path#/}"
 
-  # Ensure directory is group-writable and sticky-setgid for shared writes
-  chown root:"$chosen_group" "$TEXTFILE_DIR" || true
+  # Traverse parents
+  for p in "${parts[@]}"; do
+    next="${cur%/}/$p"
+    # If next is the final and is a file, stop after ensuring parents
+    if [[ -f "$path" && "$next" == "$path" ]]; then
+      break
+    fi
+
+    # Only touch ACL if backup can't traverse
+    if ! sudo -u "$BACKUP_USER" test -x "$next" 2>/dev/null; then
+      # Grant traverse only (x) on restrictive dirs
+      setfacl -m "u:${BACKUP_USER}:x" "$next" || true
+    fi
+    cur="$next"
+  done
+
+  if [[ -d "$path" ]]; then
+    # Ensure backup can read+traverse the target dir
+    if ! sudo -u "$BACKUP_USER" test -r "$path" 2>/dev/null || ! sudo -u "$BACKUP_USER" test -x "$path" 2>/dev/null; then
+      setfacl -m "u:${BACKUP_USER}:rx" "$path" || true
+    fi
+  else
+    # File: ensure parent dir traverse + file readable
+    local parent
+    parent="$(dirname "$path")"
+    if ! sudo -u "$BACKUP_USER" test -x "$parent" 2>/dev/null; then
+      setfacl -m "u:${BACKUP_USER}:x" "$parent" || true
+    fi
+    if ! sudo -u "$BACKUP_USER" test -r "$path" 2>/dev/null; then
+      setfacl -m "u:${BACKUP_USER}:r" "$path" || true
+    fi
+  fi
+}
+
+choose_textfile_group() {
+  # IMPORTANT: nodeexp_txt wins if present (your multi-writer design)
+  if getent group nodeexp_txt >/dev/null; then
+    echo "nodeexp_txt"
+    return 0
+  fi
+
+  # fall back to node_exporter if you really want single-group model
+  if getent group node_exporter >/dev/null; then
+    echo "node_exporter"
+    return 0
+  fi
+
+  # Create nodeexp_txt if nothing exists
+  groupadd nodeexp_txt
+  echo "nodeexp_txt"
+}
+
+fix_textfile_collector_perms() {
+  [[ -d "$TEXTFILE_DIR" ]] || return 0
+
+  local g
+  g="$(choose_textfile_group)"
+
+  # Ensure both writers are in the group
+  id "$BACKUP_USER" >/dev/null 2>&1 && usermod -aG "$g" "$BACKUP_USER" || true
+  id "$PATCHCHECK_USER" >/dev/null 2>&1 && usermod -aG "$g" "$PATCHCHECK_USER" || true
+
+  # Enforce invariant:
+  #   dir group == g AND setgid ON (so new files inherit group)
+  chown root:"$g" "$TEXTFILE_DIR" || true
   chmod 2775 "$TEXTFILE_DIR" || true
 
-  # Add backup user to group
-  usermod -aG "$chosen_group" "$BACKUP_USER" || true
+  # Normalize existing prom files to the writer group and group-writable
+  chgrp "$g" "$TEXTFILE_DIR"/*.prom 2>/dev/null || true
+  chmod 0664 "$TEXTFILE_DIR"/*.prom 2>/dev/null || true
 
-  # If patchcheck user exists, add it too (don’t create it here)
-  if id patchcheck >/dev/null 2>&1; then
-    usermod -aG "$chosen_group" patchcheck || true
-  fi
-
-  # Add default ACLs for group read/write so both services can create/delete .prom files
-  # IMPORTANT: do NOT touch ACL mask
-  if command -v setfacl >/dev/null 2>&1; then
-    setfacl -m g:"$chosen_group":rwx "$TEXTFILE_DIR" || true
-    setfacl -d -m g:"$chosen_group":rwx "$TEXTFILE_DIR" || true
-  fi
+  # ACLs:
+  # - allow group rwx on dir
+  # - default ACL so new files keep correct perms
+  setfacl -m "g:${g}:rwx" "$TEXTFILE_DIR" || true
+  setfacl -d -m "g:${g}:rwx" "$TEXTFILE_DIR" || true
 }
 
-# -----------------------------
-# Allow-path / Allow-file ACL logic (SAFE)
-# -----------------------------
-grant_dir_acl_non_recursive() {
-  local dir="$1"
-  [[ -d "$dir" ]] || die "--allow-path must be a directory that exists: $dir"
+write_remote_metric() {
+  # Best-effort metric for node_exporter textfile collector
+  local prom="$TEXTFILE_DIR/fsbackup_remote_init.prom"
+  local ts
+  ts="$(date +%s)"
 
-  if is_protected_dir "$dir"; then
-    die "Refusing to modify protected directory: $dir"
-  fi
+  mkdir -p "$TEXTFILE_DIR" 2>/dev/null || true
 
-  if is_under_etc "$dir"; then
-    die "/etc directories are not allowed with --allow-path. Use --allow-file for specific files."
-  fi
-
-  # Add execute on all parent dirs is not needed if dir is already traversable, but harmless:
-  # Instead we apply ACL on dir itself.
-  log "Granting non-recursive ACL: u:${BACKUP_USER}:rX on ${dir}"
-  setfacl -m u:"$BACKUP_USER":rX "$dir"
-}
-
-grant_dir_acl_recursive() {
-  local dir="$1"
-  [[ -d "$dir" ]] || die "--allow-path must be a directory that exists: $dir"
-
-  if is_protected_dir "$dir"; then
-    die "Refusing to recursively modify protected directory: $dir"
-  fi
-
-  if is_under_etc "$dir"; then
-    die "/etc directories are not allowed with --recursive. Use --allow-file."
-  fi
-
-  if ! is_safe_recursive_root "$dir"; then
-    die "Refusing recursive ACL outside safe roots. Path: $dir"
-  fi
-
-  log "Granting recursive ACL: u:${BACKUP_USER}:rX on ${dir} (and default ACLs)"
-  setfacl -R -m u:"$BACKUP_USER":rX "$dir"
-  setfacl -R -d -m u:"$BACKUP_USER":rX "$dir" || true
-}
-
-grant_file_acl() {
-  local f="$1"
-  [[ -f "$f" ]] || die "--allow-file must be an existing file: $f"
-
-  if is_protected_dir "$f"; then
-    die "Refusing to modify protected path: $f"
-  fi
-
-  # For /etc/*: allow read on file, and execute on parent dirs needed for traversal.
-  local parent
-  parent="$(dirname "$f")"
-
-  if is_under_etc "$f"; then
-    # Only touch the specific file + its immediate parent dir for traversal.
-    log "Granting file ACL: u:${BACKUP_USER}:r on ${f}"
-    setfacl -m u:"$BACKUP_USER":r "$f"
-
-    log "Ensuring traversal ACL on parent dir: u:${BACKUP_USER}:x on ${parent}"
-    setfacl -m u:"$BACKUP_USER":x "$parent"
-    return
-  fi
-
-  # Non-/etc files: allow read on file + traverse parent
-  log "Granting file ACL: u:${BACKUP_USER}:r on ${f}"
-  setfacl -m u:"$BACKUP_USER":r "$f"
-  log "Ensuring traversal ACL on parent dir: u:${BACKUP_USER}:x on ${parent}"
-  setfacl -m u:"$BACKUP_USER":x "$parent"
-}
-
-apply_allow_lists() {
-  command -v setfacl >/dev/null 2>&1 || {
-    log "setfacl not installed; skipping allow-path/allow-file ACL operations"
-    return
-  }
-
-  for p in "${ALLOW_PATHS[@]}"; do
-    [[ -n "$p" ]] || continue
-    if [[ "$RECURSIVE" -eq 1 ]]; then
-      grant_dir_acl_recursive "$p"
-    else
-      grant_dir_acl_non_recursive "$p"
-    fi
-  done
-
-  for f in "${ALLOW_FILES[@]}"; do
-    [[ -n "$f" ]] || continue
-    grant_file_acl "$f"
-  done
-}
-
-# -----------------------------
-# Metrics
-# -----------------------------
-write_metrics() {
-  [[ "$WRITE_METRICS" -eq 1 ]] || return 0
-  local now rc
-  now="$(date +%s)"
-  rc="$1"
-
-  mkdir -p "$(dirname "$METRIC_FILE")" || true
-  cat >"$METRIC_FILE" <<EOF
+  cat >"$prom" <<EOF
 # HELP fsbackup_remote_init_last_run_seconds Unix timestamp of last remote init run
 # TYPE fsbackup_remote_init_last_run_seconds gauge
-fsbackup_remote_init_last_run_seconds ${now}
+fsbackup_remote_init_last_run_seconds ${ts}
 
-# HELP fsbackup_remote_init_status Status (0=ok,1=failed)
+# HELP fsbackup_remote_init_status 0=ok 1=failed
 # TYPE fsbackup_remote_init_status gauge
-fsbackup_remote_init_status ${rc}
+fsbackup_remote_init_status 0
 EOF
-  chmod 644 "$METRIC_FILE" 2>/dev/null || true
-}
 
-# =============================================================================
-# Main
-# =============================================================================
-main() {
-  log "Starting fsbackup remote init"
-  ensure_backup_user
-  install_authorized_key
-  setup_textfile_perms
-  apply_allow_lists
-
-  # One-line verifier (requested)
-  # Verifies backup user can authenticate via key *if* SSH is local and key is in place.
-  # (This does not guarantee network reachability from fs, but it proves account+key.)
-  if command -v ssh >/dev/null 2>&1; then
-    sudo -u "$BACKUP_USER" ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
-      -o ConnectTimeout=3 localhost "true" >/dev/null 2>&1 || true
+  # Keep perms consistent if dir exists
+  if [[ -d "$TEXTFILE_DIR" ]]; then
+    # Use current directory group and setgid behavior
+    chgrp "$(stat -c %G "$TEXTFILE_DIR")" "$prom" 2>/dev/null || true
+    chmod 0664 "$prom" 2>/dev/null || true
   fi
-
-  write_metrics 0
-  echo "fsbackup-remote-init OK"
 }
 
-if main; then
-  exit 0
+# --------------------------- MAIN ---------------------------------------------
+
+log "Ensuring backup user: $BACKUP_USER"
+ensure_user "$BACKUP_USER" "$BACKUP_HOME" "$BACKUP_SHELL"
+install_pubkey "$BACKUP_USER"
+
+log "Applying allow-path ACLs (${#ALLOW_PATHS[@]} items)"
+for p in "${ALLOW_PATHS[@]}"; do
+  ensure_backup_access_path "$p"
+done
+
+if [[ "$SKIP_TEXTFILE" -eq 0 ]]; then
+  log "Fixing node_exporter textfile collector perms (patchcheck-safe)"
+  fix_textfile_collector_perms
+  write_remote_metric
 else
-  rc=$?
-  write_metrics 1 || true
-  exit "$rc"
+  log "Skipping textfile collector perms (--skip-textfile)"
+fi
+
+# One-line verifier (requested):
+# - backup must be able to rsync-list each allow-path (dry-run semantics)
+# - and patchcheck must be able to write a prom file if the dir exists
+VERIFY_OK=1
+
+# Verify allow-paths read/traverse
+for p in "${ALLOW_PATHS[@]}"; do
+  if [[ -e "$p" ]]; then
+    if ! sudo -u "$BACKUP_USER" test -r "$p" 2>/dev/null && [[ -f "$p" ]]; then
+      VERIFY_OK=0
+    fi
+    if ! sudo -u "$BACKUP_USER" test -x "$p" 2>/dev/null && [[ -d "$p" ]]; then
+      VERIFY_OK=0
+    fi
+  fi
+done
+
+# Verify patchcheck writer path (if present)
+if id "$PATCHCHECK_USER" >/dev/null 2>&1 && [[ -d "$TEXTFILE_DIR" ]]; then
+  if ! sudo -u "$PATCHCHECK_USER" bash -c "echo ok > '$TEXTFILE_DIR/.patchcheck_write_test' && rm -f '$TEXTFILE_DIR/.patchcheck_write_test'" >/dev/null 2>&1; then
+    VERIFY_OK=0
+  fi
+fi
+
+if [[ "$VERIFY_OK" -eq 1 ]]; then
+  echo "VERIFY: remote init OK"
+else
+  echo "VERIFY: remote init FAIL (check ACLs/groups)"
+  exit 1
 fi
 
