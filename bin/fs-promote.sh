@@ -1,161 +1,108 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -u
 
-# =============================================================================
-# fs-promote.sh
-#
-# Promotes snapshots between tiers using hardlinks.
-# =============================================================================
-
-# -----------------------------
-# Configuration
-# -----------------------------
-BAK_ROOT="/bak"
-SNAP_ROOT="${BAK_ROOT}/snapshots"
+SNAPSHOT_ROOT="/bak/snapshots"
 LOG_FILE="/var/lib/fsbackup/log/backup.log"
-METRICS_DIR="/var/lib/node_exporter/textfile_collector"
+LOCK_FILE="/var/lock/fsbackup.lock"
 
-# Import metrics emitter
-# shellcheck source=/usr/local/lib/fsbackup/fs-exporter.sh
-source /usr/local/lib/fsbackup/fs-exporter.sh
+NODE_EXPORTER_TEXTFILE="/var/lib/node_exporter/textfile_collector"
+METRIC_FILE="${NODE_EXPORTER_TEXTFILE}/fsbackup_promote.prom"
 
-# -----------------------------
-# Arguments
-# -----------------------------
-FROM=""
-TO=""
-CLASS=""
-DATE=""
+ts(){ date +%Y-%m-%dT%H:%M:%S%z; }
+log(){ printf "%s %s\n" "$(ts)" "$*"; }
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --from)  FROM="$2"; shift 2 ;;
-    --to)    TO="$2"; shift 2 ;;
-    --class) CLASS="$2"; shift 2 ;;
-    --date)  DATE="$2"; shift 2 ;;
-    *)
-      echo "Unknown argument: $1" >&2
-      exit 2
-      ;;
-  esac
-done
+exec > >(tee -a "$LOG_FILE") 2>&1
 
-[[ -n "$FROM" ]]  || { echo "Missing --from"; exit 2; }
-[[ -n "$TO" ]]    || { echo "Missing --to"; exit 2; }
-[[ -n "$CLASS" ]] || { echo "Missing --class"; exit 2; }
+exec 9>"$LOCK_FILE"
+flock -n 9 || { log "[fs-promote] lock held, skipping"; exit 75; }
 
-# -----------------------------
-# Validation
-# -----------------------------
-case "$FROM" in daily|weekly|monthly) ;; *) echo "Invalid --from"; exit 2 ;; esac
-case "$TO"   in weekly|monthly|annual) ;; *) echo "Invalid --to"; exit 2 ;; esac
+TODAY="$(date +%F)"
+WEEKKEY="$(date +%G-W%V)"
+MONTHKEY="$(date +%Y-%m)"
+DOW="$(date +%u)"       # 1=Mon
+DOM="$(date +%d)"       # 01..31
 
-METRICS_FILE="${METRICS_DIR}/fs_promote__${FROM}_to_${TO}_${CLASS}.prom"
+log "[fs-promote] Starting promotion checks"
 
-# -----------------------------
-# Logging helper
-# -----------------------------
-log() {
-  echo "$(date -Is) [PROMOTE ${FROM}->${TO} ${CLASS}] $*" >>"$LOG_FILE"
+promote_one() {
+  local class="$1"
+  local dest_type="$2"   # weekly|monthly
+  local dest_key="$3"    # YYYY-Www or YYYY-MM
+  local src="${SNAPSHOT_ROOT}/daily/${TODAY}/${class}"
+  local dst="${SNAPSHOT_ROOT}/${dest_type}/${dest_key}/${class}"
+
+  [[ -d "$src" ]] || { log "[fs-promote] No daily source dir: $src"; return 1; }
+
+  mkdir -p "$dst"
+
+  # Hardlink-based copy: if file exists in daily, link-dest makes rsync link it.
+  # --delete keeps promoted snapshot consistent with daily.
+  rsync -a --delete --link-dest="$src" "$src/" "$dst/" >/dev/null 2>&1 || return 2
+  return 0
 }
 
-# -----------------------------
-# Time bookkeeping
-# -----------------------------
-START_TS="$(date +%s)"
-END_TS=0
-STATUS=1
-ERROR_CODE=99
-TARGET_COUNT=0
+PROMOTED_WEEKLY=0
+PROMOTED_MONTHLY=0
+FAIL=0
 
-fail() {
-  local code="$1"
-  local msg="$2"
-
-  END_TS="$(date +%s)"
-  ERROR_CODE="$code"
-  STATUS=1
-
-  log "ERROR ($code): $msg"
-
-  emit_promote_metrics \
-    --metrics-file "$METRICS_FILE" \
-    --from "$FROM" \
-    --to "$TO" \
-    --class "$CLASS" \
-    --status "$STATUS" \
-    --error-code "$ERROR_CODE" \
-    --start-ts "$START_TS" \
-    --end-ts "$END_TS" \
-    --duration "$((END_TS-START_TS))" \
-    --targets "$TARGET_COUNT"
-
-  exit 1
-}
-
-# -----------------------------
-# Determine source snapshot
-# -----------------------------
-FROM_BASE="${SNAP_ROOT}/${FROM}"
-
-[[ -d "$FROM_BASE" ]] || fail 10 "Source tier missing: $FROM_BASE"
-
-if [[ -n "$DATE" ]]; then
-  FROM_DATE="$DATE"
+# find classes by scanning daily/<today>/
+if [[ -d "${SNAPSHOT_ROOT}/daily/${TODAY}" ]]; then
+  mapfile -t CLASSES < <(ls -1 "${SNAPSHOT_ROOT}/daily/${TODAY}" 2>/dev/null || true)
 else
-  FROM_DATE="$(ls -1 "$FROM_BASE" | sort | tail -n 1)"
+  CLASSES=()
 fi
 
-FROM_PATH="${FROM_BASE}/${FROM_DATE}/${CLASS}"
-
-[[ -d "$FROM_PATH" ]] || fail 11 "Source snapshot not found: $FROM_PATH"
-
-# -----------------------------
-# Determine destination snapshot
-# -----------------------------
-case "$TO" in
-  weekly)  TO_DATE="$(date -d "$FROM_DATE" +%G-W%V)" ;;
-  monthly) TO_DATE="$(date -d "$FROM_DATE" +%Y-%m)" ;;
-  annual)  TO_DATE="$(date -d "$FROM_DATE" +%Y)" ;;
-esac
-
-TO_PATH="${SNAP_ROOT}/${TO}/${TO_DATE}/${CLASS}"
-
-if [[ -e "$TO_PATH" ]]; then
-  fail 12 "Destination snapshot already exists: $TO_PATH"
+if [[ "${#CLASSES[@]}" -eq 0 ]]; then
+  log "[fs-promote] No classes found under daily/${TODAY}; nothing to promote"
 fi
 
-mkdir -p "$(dirname "$TO_PATH")"
+if [[ "$DOW" -ne 1 ]]; then
+  log "[fs-promote] Not Monday — skipping weekly promotion"
+else
+  for c in "${CLASSES[@]}"; do
+    if promote_one "$c" "weekly" "$WEEKKEY"; then
+      PROMOTED_WEEKLY=$((PROMOTED_WEEKLY+1))
+      log "[fs-promote] Weekly promoted: class=$c -> ${WEEKKEY}"
+    else
+      log "[fs-promote] Weekly promotion FAILED: class=$c"
+      FAIL=$((FAIL+1))
+    fi
+  done
+fi
 
-# -----------------------------
-# Promotion
-# -----------------------------
-log "Promoting ${FROM}/${FROM_DATE}/${CLASS} -> ${TO}/${TO_DATE}/${CLASS}"
+if [[ "$DOM" != "01" ]]; then
+  log "[fs-promote] Not first of month — skipping monthly promotion"
+else
+  for c in "${CLASSES[@]}"; do
+    if promote_one "$c" "monthly" "$MONTHKEY"; then
+      PROMOTED_MONTHLY=$((PROMOTED_MONTHLY+1))
+      log "[fs-promote] Monthly promoted: class=$c -> ${MONTHKEY}"
+    else
+      log "[fs-promote] Monthly promotion FAILED: class=$c"
+      FAIL=$((FAIL+1))
+    fi
+  done
+fi
 
-cp -al "$FROM_PATH" "$TO_PATH" || fail 20 "Hardlink promotion failed"
+log "[fs-promote] Promotion complete"
 
-TARGET_COUNT="$(find "$TO_PATH" -mindepth 1 -maxdepth 1 -type d | wc -l)"
-
-# -----------------------------
-# Success
-# -----------------------------
-END_TS="$(date +%s)"
-STATUS=0
-ERROR_CODE=0
-
-log "Promotion completed successfully (${TARGET_COUNT} targets)"
-
-emit_promote_metrics \
-  --metrics-file "$METRICS_FILE" \
-  --from "$FROM" \
-  --to "$TO" \
-  --class "$CLASS" \
-  --status "$STATUS" \
-  --error-code "$ERROR_CODE" \
-  --start-ts "$START_TS" \
-  --end-ts "$END_TS" \
-  --duration "$((END_TS-START_TS))" \
-  --targets "$TARGET_COUNT"
+# Metrics
+now="$(date +%s)"
+cat >"$METRIC_FILE" <<EOF
+# HELP fsbackup_promote_last_run_seconds Unix timestamp of last promote run
+# TYPE fsbackup_promote_last_run_seconds gauge
+fsbackup_promote_last_run_seconds $now
+# HELP fsbackup_promote_weekly_classes_promoted Number of classes promoted to weekly
+# TYPE fsbackup_promote_weekly_classes_promoted gauge
+fsbackup_promote_weekly_classes_promoted $PROMOTED_WEEKLY
+# HELP fsbackup_promote_monthly_classes_promoted Number of classes promoted to monthly
+# TYPE fsbackup_promote_monthly_classes_promoted gauge
+fsbackup_promote_monthly_classes_promoted $PROMOTED_MONTHLY
+# HELP fsbackup_promote_failures Number of promotion failures
+# TYPE fsbackup_promote_failures gauge
+fsbackup_promote_failures $FAIL
+EOF
+chmod 0644 "$METRIC_FILE" 2>/dev/null || true
 
 exit 0
 

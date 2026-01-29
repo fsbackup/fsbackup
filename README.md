@@ -1,220 +1,190 @@
 # fsbackup
 
-## Requirements
+`fsbackup` is a lightweight, pull-based backup system built around `rsync`, SSH, and filesystem snapshots.
+This repository contains **only the code and configuration needed to deploy and run the backup system**.
 
-apt install yq acl
+Operational runbooks, retention policy explanations, and business-facing documentation live **outside this repo**
+in the central documentation site.
 
-sudo wget -qO /usr/local/bin/yq \
-  https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+---
 
-sudo chmod +x /usr/local/bin/yq
+## What this repository is for
 
+- Installing the fsbackup tooling on the backup server
+- Preparing remote hosts for safe, read-only backups
+- Defining *what* gets backed up (targets)
+- Running daily snapshots and promotions
 
-## Bootstrap installer
+This repo intentionally avoids:
+- Business retention rationale
+- Disaster recovery narratives
+- Human procedures (those belong in Docmost)
 
-server_install.sh
+---
 
-# =============================================================================
-# fsbackup-bootstrap.sh
-#
-# Idempotent bootstrap for FS backup node.
-# Safe to run multiple times to restore known-good state.
-#
-# Usage:
-#   fsbackup-bootstrap.sh \
-#     --bak-root /bak \
-#     --tmp-dir /bak/tmp \
-#     --snapshot-dir /bak/snapshots
-#
-# =============================================================================
-
-This sets up the FS backup node back to defaults and ensures a sane environment.
-
-Safe to re-run at any time (idempotent)
-Explicit ownership and permissions (no “best effort”)
-Parameterized temp + snapshot roots
-Creates and validates fsbackup user
-Generates SSH key only if missing
-Emits a clear operator note at the end
-Fails fast if something fundamental is wrong
-
-
-## Paths
-
-Configuration
-
-/etc/fsbackup/targets.yml - targets
-/etc/fsbackup/fsbackup.env - non-secret defaults
-/etc/fsbackup/credentials.env
-
-Libraries
-
-/usr/local/lib/fsbackup/fs-exporter.sh
-
-Executables
-
-/usr/local/sbin/fs-runner.sh
-/usr/local/sbin/fs-snapshot.sh
-/usr/local/sbin/fs-prune.sh
-/usr/local/sbin/fs-export-s3.sh
-
-State
-
-/var/lib/fsbackup/.ssh/id_ed25519_backup
-/var/lib/fsbackup/.ssh/id_ed25519_backup.pub
-/var/lib/fsbackup/.ssh/config
-/var/lib/fsbackup/log
-/var/lib/fsbackup/manifests/
-
-/bak/tmp
+## Repository layout
 
 ```
-
-## Create user on the backup server
-
-
-
-## Set folder permissions, ensure paths exist
-
-### Create dirs
-
-```
-# Configuration
-mkdir -p /etc/fsbackup
-
-# Libraries
-mkdir -p /usr/local/lib/fsbackup
-
-# Executables (usually already exist, mkdir is harmless)
-mkdir -p /usr/local/sbin
-
-# State
-mkdir -p /var/lib/fsbackup/.ssh
-mkdir -p /var/lib/fsbackup/log
-mkdir -p /var/lib/fsbackup/manifests
-
-# Backup temp area (on data volume)
-mkdir -p /bak/tmp
+.
+├── bin/                    # Executable scripts
+│   ├── fs-runner.sh         # Main snapshot runner
+│   ├── fs-doctor.sh         # Connectivity & permissions checks
+│   ├── fs-snapshot.sh      # Single-target snapshot helper
+│   ├── fs-preflight.sh     # Shared preflight logic
+│   ├── fs-promote.sh       # Daily → weekly → monthly promotion
+│   ├── fs-retention.sh     # Retention policy enforcement
+│   ├── fs-prune.sh         # Old snapshot pruning
+│   ├── fs-restore.sh       # Restore helper
+│   ├── fs-trust-host.sh    # SSH host key seeding
+│   └── fs-export-s3.sh     # Optional offsite export
+│
+├── etc/
+│   ├── targets.yml         # Backup target definitions
+│   └── fsbackup.conf       # Global settings (paths, retention)
+│
+├── bootstrap/
+│   └── fsbackup_bootstrap.sh   # Initial setup on backup server
+│
+├── remote/
+│   └── fsbackup_remote_init.sh # Prepare source hosts
+│
+└── README.md               # This file
 ```
 
-### Change ownership
+---
 
-```
-chown root:fsbackup /etc/fsbackup
-chown -R root:root /usr/local/lib/fsbackup
-chown root:root /usr/local/sbin/fs-*.sh
-chown -R fsbackup:fsbackup /var/lib/fsbackup
-chown -R fsbackup:fsbackup /bak/tmp
-```
+## Installation (backup server)
 
-### Permissions
+1. Clone the repository:
+   ```bash
+   git clone <private-repo-url> /opt/fsbackup
+   cd /opt/fsbackup
+   ```
 
-```
-chmod 750 /etc/fsbackup
+2. Run the bootstrap script:
+   ```bash
+   sudo ./bootstrap/fsbackup_bootstrap.sh
+   ```
 
-# targets.yml (readable by fsbackup)
-chmod 640 /etc/fsbackup/targets.yml
+   This will:
+   - Create the `fsbackup` user
+   - Create snapshot directories (e.g. `/bak/snapshots`)
+   - Generate SSH keys
+   - Install scripts into `/usr/local/bin` (or symlink)
 
-# non-secret defaults
-chmod 640 /etc/fsbackup/fsbackup.env
+3. Verify:
+   ```bash
+   sudo -u fsbackup fs-doctor.sh --class class2
+   ```
 
-# credentials (secrets)
-chmod 600 /etc/fsbackup/credentials.env
+---
 
-# Libraries
-chmod 755 /usr/local/lib/fsbackup
-chmod 644 /usr/local/lib/fsbackup/fs-exporter.sh
+## Preparing source hosts
 
-# Executables
-chmod 755 /usr/local/sbin/fs-runner.sh
-chmod 755 /usr/local/sbin/fs-snapshot.sh
-chmod 755 /usr/local/sbin/fs-prune.sh
-chmod 755 /usr/local/sbin/fs-export-s3.sh
+On **each system to be backed up**, run:
 
-# State dirs
-chmod 700 /var/lib/fsbackup
-chmod 700 /var/lib/fsbackup/.ssh
-chmod 750 /var/lib/fsbackup/log
-chmod 750 /var/lib/fsbackup/manifests
-
-# SSH Keys
-chmod 600 /var/lib/fsbackup/.ssh/id_ed25519_backup
-chmod 644 /var/lib/fsbackup/.ssh/id_ed25519_backup.pub
-chmod 600 /var/lib/fsbackup/.ssh/config
-
-# Backup Temp Dir
-chmod 750 /bak/tmp
-
-# Exporter metrics collector text file
-chown fsbackup:fsbackup /var/lib/node_exporter/textfile_collector
-chmod 755 /var/lib/node_exporter/textfile_collector
+```bash
+sudo ./remote/fsbackup_remote_init.sh
 ```
 
-## Verify
+This script:
+- Creates the `backup` user
+- Installs the backup server’s SSH public key
+- Applies minimal ACLs to approved paths only
+
+> No services are restarted and no daemons are installed.
+
+---
+
+## Configuration
+
+### targets.yml
+
+All backup scope is defined in:
 
 ```
-# As fsbackup, verify write access
-sudo -u fsbackup touch /var/lib/fsbackup/log/test.log
-sudo -u fsbackup touch /bak/tmp/test.tmp
-sudo -u fsbackup touch /var/lib/node_exporter/textfile_collector/test.prom
-
-# Verify scripts are executable
-ls -l /usr/local/sbin/fs-*.sh
-
-# Verify secrets are locked down
-ls -l /etc/fsbackup/credentials.env
+etc/targets.yml
 ```
 
-
-## Creating the server key
-
-```
-sudo -u fsbackup ssh-keygen \
-  -t ed25519 \
-  -f /var/lib/fsbackup/.ssh/id_ed25519_backup \
-  -C "fs-backup@$(hostname)"
-```
-
-Only recreate the key if something has been compromised, or if a refresh is needed. If you do this you will need to change the public key on all remote backup targets.
-
-## Install backup user and SSH keys on target hosts
-
-1. Create backup user and install public key on each host
-
-Create a matching backup user
-`useradd -r -s /bin/bash backup`
-
-2. Install FS’s public key
-
-```
-mkdir -p /home/backup/.ssh
-chown -R backup:backup /home/backup/.ssh
-chmod 700 /home/backup/.ssh
-touch /home/backup/.ssh/authorized_keys
-chmod 600 /home/backup/.ssh/authorized_keys
-```
-
-`nano /home/backup/.ssh/authorized_keys`
-
-```
-from="172.30.3.130",
-no-agent-forwarding,
-no-port-forwarding,
-no-pty,
-no-X11-forwarding
-ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI...
-```
-
-3. Set ACL permissions for targets that backup user cannot read:
+Each entry specifies:
+- `id` – unique snapshot name
+- `host` – source host (or local hostname)
+- `source` – file or directory path
+- `type` – `file` or `dir`
+- `rsync_opts` – optional per-target overrides
 
 Example:
 
-```
-setfacl -R -m u:backup:rX /etc/headscale
-getfacl /etc/headscale
+```yaml
+class2:
+  - id: headscale.config
+    host: hs
+    source: /etc/headscale
+    type: dir
 ```
 
-You should see something like:
-user:backup:r-x
+---
 
-Note you may need to install the 'acl' package on raspberry pi or otherwise.
+## Running backups
+
+### Preflight (recommended)
+
+```bash
+sudo -u fsbackup fs-doctor.sh --class class2
+```
+
+### Daily snapshot
+
+```bash
+sudo -u fsbackup fs-runner.sh daily --class class2
+```
+
+### Dry run
+
+```bash
+sudo -u fsbackup fs-runner.sh daily --class class2 --dry-run
+```
+
+---
+
+## Scheduling
+
+The system is designed to be driven by **systemd timers**:
+
+- Daily snapshots
+- Weekly/monthly promotion
+- Retention pruning
+
+Timer units are installed separately and are not required for manual operation.
+
+---
+
+## Logging
+
+All runs are logged with timestamps and target IDs.
+Logs are written via `tee` to the configured log directory
+(e.g. `/var/lib/fsbackup/log/backup.log`).
+
+---
+
+## What’s documented elsewhere
+
+The following intentionally live in the documentation site, not here:
+
+- Backup & Restore Runbook
+- Retention policy justification
+- Disaster recovery scenarios
+- Audit / compliance explanations
+
+This repo is **implementation**, not policy.
+
+---
+
+## Philosophy
+
+- Pull-based (backup server initiates all access)
+- Least-privilege ACLs
+- No agents
+- No databases
+- Human-readable snapshots
+

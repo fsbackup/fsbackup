@@ -2,61 +2,62 @@
 set -u
 
 CONFIG_FILE="/etc/fsbackup/targets.yml"
-BACKUP_ROOT="/bak/snapshots"
+SNAPSHOT_ROOT="/bak/snapshots"
 BACKUP_SSH_USER="backup"
 
 LOG_DIR="/var/lib/fsbackup/log"
 LOG_FILE="${LOG_DIR}/backup.log"
 
-SNAPSHOT_TYPE=""
+NODE_EXPORTER_TEXTFILE="/var/lib/node_exporter/textfile_collector"
+METRIC_FILE="${NODE_EXPORTER_TEXTFILE}/fsbackup_runner.prom"
+
+LOCK_FILE="/var/lock/fsbackup.lock"
+
+usage() {
+  cat <<EOF
+Usage:
+  fs-runner.sh <daily|weekly|monthly> --class <class> [--dry-run] [--replace-existing]
+
+Examples:
+  fs-runner.sh daily --class class2 --dry-run
+  fs-runner.sh daily --class class2 --replace-existing
+EOF
+}
+
+SNAP_TYPE="${1:-}"
+shift || true
+
 CLASS=""
 DRY_RUN=0
 REPLACE=0
 
-mkdir -p "$LOG_DIR"
-touch "$LOG_FILE"
-chmod 0640 "$LOG_FILE"
-
-exec > >(tee -a "$LOG_FILE") 2>&1
-
-ts() {
-  date +"%Y-%m-%dT%H:%M:%S%z"
-}
-
-log() {
-  local id="$1"
-  shift
-  printf "%s [%s] %s\n" "$(ts)" "$id" "$*"
-}
-
-usage() {
-  echo "Usage: fs-runner.sh <daily|weekly|monthly> --class <class> [--dry-run] [--replace-existing]"
-  exit 2
-}
-
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    daily|weekly|monthly) SNAPSHOT_TYPE="$1"; shift ;;
     --class) CLASS="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     --replace-existing) REPLACE=1; shift ;;
-    *) usage ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "Unknown arg: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
 
-[[ -n "$SNAPSHOT_TYPE" && -n "$CLASS" ]] || usage
+[[ "$SNAP_TYPE" == "daily" || "$SNAP_TYPE" == "weekly" || "$SNAP_TYPE" == "monthly" ]] || { usage; exit 2; }
+[[ -n "$CLASS" ]] || { echo "Missing --class" >&2; exit 2; }
 
-command -v yq >/dev/null || { echo "yq not found"; exit 2; }
-command -v jq >/dev/null || { echo "jq not found"; exit 2; }
-command -v rsync >/dev/null || { echo "rsync not found"; exit 2; }
+command -v yq >/dev/null || { echo "yq not found" >&2; exit 2; }
+command -v jq >/dev/null || { echo "jq not found" >&2; exit 2; }
+command -v rsync >/dev/null || { echo "rsync not found" >&2; exit 2; }
+command -v ssh >/dev/null || { echo "ssh not found" >&2; exit 2; }
+command -v flock >/dev/null || { echo "flock not found" >&2; exit 2; }
 
-mapfile -t TARGETS < <(
-  yq eval -o=json ".${CLASS}[]" "$CONFIG_FILE" | jq -c .
-)
+ts() { date +%Y-%m-%dT%H:%M:%S%z; }
 
-DATE="$(date +%F)"
-DEST_BASE="${BACKUP_ROOT}/${SNAPSHOT_TYPE}/${DATE}/${CLASS}"
+log() {
+  local msg="$*"
+  printf "%s %s\n" "$(ts)" "$msg"
+}
 
+# Identify local host robustly
 is_local_host() {
   local h="$1"
   local short fqdn
@@ -68,10 +69,12 @@ is_local_host() {
   [[ -n "$fqdn" && "$h" == "$fqdn" ]] && return 0
 
   if getent hosts "$h" >/dev/null 2>&1; then
-    local tip lip
-    for tip in $(getent hosts "$h" | awk '{print $1}'); do
-      for lip in $(hostname -I); do
-        [[ "$tip" == "$lip" ]] && return 0
+    local target_ips local_ips ip lip
+    target_ips="$(getent hosts "$h" | awk '{print $1}')"
+    local_ips="$(hostname -I 2>/dev/null || true)"
+    for ip in $target_ips; do
+      for lip in $local_ips; do
+        [[ "$ip" == "$lip" ]] && return 0
       done
     done
   fi
@@ -79,91 +82,160 @@ is_local_host() {
   return 1
 }
 
+# Snapshot key by type
+snap_key() {
+  case "$SNAP_TYPE" in
+    daily) date +%F ;;
+    weekly) date +%G-W%V ;;
+    monthly) date +%Y-%m ;;
+  esac
+}
+
+SNAP_KEY="$(snap_key)"
+DEST_BASE="${SNAPSHOT_ROOT}/${SNAP_TYPE}/${SNAP_KEY}/${CLASS}"
+
+# Load targets as compact JSON, one per line
+mapfile -t TARGETS < <(yq eval -o=json ".${CLASS}[]" "$CONFIG_FILE" | jq -c .)
 TOTAL="${#TARGETS[@]}"
-OK=0
-FAIL=0
 
-echo
-echo "fs-runner starting"
-echo "  Snapshot type: $SNAPSHOT_TYPE"
-echo "  Class:         $CLASS"
-echo "  Targets:       $TOTAL"
-echo "  Dry-run:       $DRY_RUN"
-echo "  Replace:       $REPLACE"
-echo
+mkdir -p "$LOG_DIR" || true
 
-echo "Running preflight checks..."
+# Single-run lock + tee logging
+exec > >(tee -a "$LOG_FILE") 2>&1
 
+log "fs-runner starting"
+log "  Snapshot type: $SNAP_TYPE"
+log "  Class:         $CLASS"
+log "  Targets:       $TOTAL"
+log "  Dry-run:       $DRY_RUN"
+log "  Replace:       $REPLACE"
+log ""
+
+# Lock whole run to prevent overlap (runner/promote/retention can share same lock)
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+  log "[fs-runner] Another fsbackup job is running (lock held): $LOCK_FILE"
+  exit 75
+fi
+
+# --- Preflight: run doctor and require PASS ---
+log "Running preflight checks..."
+if ! sudo -u fsbackup /usr/local/sbin/fs-doctor.sh --class "$CLASS" >/dev/null; then
+  log "Preflight failed — aborting snapshot run."
+  exit 10
+fi
+
+# Print preflight summary lines (doctor output is already in log file; show concise OK)
 for t in "${TARGETS[@]}"; do
-  id="$(jq -r '.id' <<<"$t")"
-  host="$(jq -r '.host' <<<"$t")"
-  src="$(jq -r '.source' <<<"$t")"
-  rsync_opts="$(jq -r '.rsync_opts // empty' <<<"$t")"
-
-  if is_local_host "$host"; then
-    [[ -e "$src" ]] || { echo "→ $id      FAIL"; exit 1; }
-  else
-    ssh -o BatchMode=yes "${BACKUP_SSH_USER}@${host}" "test -e '$src'" \
-      || { echo "→ $id      FAIL"; exit 1; }
-  fi
-  echo "→ $id      OK"
+  id="$(jq -r '.id // empty' <<<"$t")"
+  [[ -z "$id" ]] && continue
+  printf "→ %-24s %s\n" "$id" "OK"
 done
 
-echo
-echo "Preflight OK — executing snapshots"
-echo
+log ""
+log "Preflight OK — executing snapshots"
+log ""
 
 mkdir -p "$DEST_BASE"
 
-for t in "${TARGETS[@]}"; do
-  id="$(jq -r '.id' <<<"$t")"
-  host="$(jq -r '.host' <<<"$t")"
-  src="$(jq -r '.source' <<<"$t")"
-  rsync_opts="$(jq -r '.rsync_opts // empty' <<<"$t")"
+OK=0
+FAIL=0
+
+run_one() {
+  local id host src rsync_opts type dest src_desc
+  id="$(jq -r '.id // empty' <<<"$1")"
+  host="$(jq -r '.host // empty' <<<"$1")"
+  src="$(jq -r '.source // empty' <<<"$1")"
+  type="$(jq -r '.type // "dir"' <<<"$1")"
+  rsync_opts="$(jq -r '.rsync_opts // empty' <<<"$1")"
+
+  [[ -z "$id" || -z "$host" || -z "$src" ]] && return 11
 
   dest="${DEST_BASE}/${id}"
+  src_desc="${src}"
 
-  [[ -d "$dest" && "$REPLACE" -eq 1 ]] && rm -rf "$dest"
+  # Ensure per-target dest exists, and optionally replace
+  if [[ "$REPLACE" -eq 1 && -d "$dest" ]]; then
+    rm -rf --one-file-system "$dest"
+  fi
   mkdir -p "$dest"
 
-  RSYNC_CMD=(rsync -a)
-  [[ "$DRY_RUN" -eq 1 ]] && RSYNC_CMD+=(-n)
-  [[ -n "$rsync_opts" ]] && RSYNC_CMD+=($rsync_opts)
+  # Base rsync options
+  local -a RSYNC_CMD
+  RSYNC_CMD=(rsync -a --delete --numeric-ids)
+  [[ "$DRY_RUN" -eq 1 ]] && RSYNC_CMD+=(-n -v)
+
+  # Optional per-target rsync opts from targets.yml
+  if [[ -n "$rsync_opts" ]]; then
+    # word-split intended
+    RSYNC_CMD+=($rsync_opts)
+  fi
+
+  log "[$id] Starting snapshot ($SNAP_TYPE) from ${src_desc}${host:+ (host=$host)}"
 
   if is_local_host "$host"; then
-    log "$id" "Starting snapshot (${SNAPSHOT_TYPE}) from ${src}"
-    if "${RSYNC_CMD[@]}" "${src%/}/" "$dest/"; then
-      log "$id" "Snapshot completed successfully"
-      ((OK++))
+    # local path
+    if [[ ! -e "$src" ]]; then
+      log "[$id] ERROR (10): Source path missing: $src"
+      return 10
+    fi
+    # normalize: if dir, sync contents; if file, sync file into dest
+    if [[ "$type" == "file" ]]; then
+      "${RSYNC_CMD[@]}" "$src" "$dest/" || return 20
     else
-      rc=$?
-      log "$id" "ERROR (${rc}): rsync failed"
-      ((FAIL++))
+      "${RSYNC_CMD[@]}" "${src%/}/" "$dest/" || return 20
     fi
   else
-    log "$id" "Starting snapshot (${SNAPSHOT_TYPE}) from ${host}:${src}"
-    if "${RSYNC_CMD[@]}" "${BACKUP_SSH_USER}@${host}:${src%/}/" "$dest/"; then
-      log "$id" "Snapshot completed successfully"
-      ((OK++))
+    # remote path
+    if [[ "$type" == "file" ]]; then
+      "${RSYNC_CMD[@]}" "${BACKUP_SSH_USER}@${host}:$src" "$dest/" || return 20
     else
-      rc=$?
-      if [[ "$rsync_opts" == *"--ignore-errors"* ]]; then
-        log "$id" "WARNING (${rc}): rsync errors ignored"
-        ((OK++))
-      else
-        log "$id" "ERROR (${rc}): rsync failed"
-        ((FAIL++))
-      fi
+      "${RSYNC_CMD[@]}" "${BACKUP_SSH_USER}@${host}:${src%/}/" "$dest/" || return 20
     fi
+  fi
+
+  log "[$id] Snapshot completed successfully"
+  return 0
+}
+
+for t in "${TARGETS[@]}"; do
+  id="$(jq -r '.id // empty' <<<"$t")"
+  if run_one "$t"; then
+    ((OK++))
+  else
+    rc=$?
+    log "[$id] ERROR ($rc): snapshot failed"
+    ((FAIL++))
   fi
 done
 
-echo
-echo "fs-runner summary"
-echo "  Total:     $TOTAL"
-echo "  Succeeded: $OK"
-echo "  Failed:    $FAIL"
-echo
+log ""
+log "fs-runner summary"
+log "  Total:     $TOTAL"
+log "  Succeeded: $OK"
+log "  Failed:    $FAIL"
+log ""
 
-exit 0
+# Metrics
+now="$(date +%s)"
+cat >"$METRIC_FILE" <<EOF
+# HELP fsbackup_runner_last_run_seconds Unix timestamp of last runner completion
+# TYPE fsbackup_runner_last_run_seconds gauge
+fsbackup_runner_last_run_seconds $now
+# HELP fsbackup_runner_targets_total Number of targets attempted
+# TYPE fsbackup_runner_targets_total gauge
+fsbackup_runner_targets_total $TOTAL
+# HELP fsbackup_runner_targets_ok Number of targets succeeded
+# TYPE fsbackup_runner_targets_ok gauge
+fsbackup_runner_targets_ok $OK
+# HELP fsbackup_runner_targets_fail Number of targets failed
+# TYPE fsbackup_runner_targets_fail gauge
+fsbackup_runner_targets_fail $FAIL
+# HELP fsbackup_runner_status Overall status (0=ok,1=fail)
+# TYPE fsbackup_runner_status gauge
+fsbackup_runner_status $([[ "$FAIL" -gt 0 ]] && echo 1 || echo 0)
+EOF
+chmod 0644 "$METRIC_FILE" 2>/dev/null || true
+
+[[ "$FAIL" -eq 0 ]]
 
