@@ -2,24 +2,22 @@
 set -euo pipefail
 
 # =============================================================================
-# fsbackup-bootstrap.sh
+# fsbackup_bootstrap.sh
 #
-# Idempotent bootstrap + updater for FS backup node.
+# Idempotent bootstrap + updater for fsbackup system.
 # Safe to re-run at any time.
 #
 # Usage:
-#   fsbackup-bootstrap.sh [--update]
-#     [--bak-root /bak]
-#     [--tmp-dir /bak/tmp]
-#     [--snapshot-dir /bak/snapshots]
+#   fsbackup_bootstrap.sh [--update]
+#     [--backup-root /backup]
 # =============================================================================
 
 # -----------------------------
 # Defaults
 # -----------------------------
-BAK_ROOT="/bak"
-TMP_DIR=""
+BACKUP_ROOT="/backup"
 SNAPSHOT_DIR=""
+TMP_DIR=""
 
 FSBACKUP_USER="fsbackup"
 FSBACKUP_GROUP="nodeexp_txt"
@@ -31,18 +29,17 @@ UPDATE=0
 
 BOOTSTRAP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_BIN_DIR="${BOOTSTRAP_DIR}/bin"
-SRC_LIB_DIR="${BOOTSTRAP_DIR}/lib"
 
-REQUIRED_LIBS=(
-  /usr/local/lib/fsbackup/fs-exporter.sh
-)
-
+# Scripts that MUST exist after install
 REQUIRED_BINS=(
-  /usr/local/sbin/fs-runner.sh
-  /usr/local/sbin/fs-snapshot.sh
-  /usr/local/sbin/fs-promote.sh
-  /usr/local/sbin/fs-prune.sh
-  /usr/local/sbin/fs-export-s3.sh
+  fs-runner.sh
+  fs-doctor.sh
+  fs-promote.sh
+  fs-retention.sh
+  fs-restore.sh
+  fs-nodeexp-fix.sh
+  fs-export-s3.sh
+  fs-trust-host.sh
 )
 
 # -----------------------------
@@ -50,10 +47,8 @@ REQUIRED_BINS=(
 # -----------------------------
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --bak-root)     BAK_ROOT="$2"; shift 2 ;;
-    --tmp-dir)      TMP_DIR="$2"; shift 2 ;;
-    --snapshot-dir) SNAPSHOT_DIR="$2"; shift 2 ;;
-    --update)       UPDATE=1; shift ;;
+    --backup-root) BACKUP_ROOT="$2"; shift 2 ;;
+    --update)      UPDATE=1; shift ;;
     *)
       echo "Unknown argument: $1" >&2
       exit 2
@@ -61,19 +56,17 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-TMP_DIR="${TMP_DIR:-${BAK_ROOT}/tmp}"
-SNAPSHOT_DIR="${SNAPSHOT_DIR:-${BAK_ROOT}/snapshots}"
+SNAPSHOT_DIR="${BACKUP_ROOT}/snapshots"
+TMP_DIR="${BACKUP_ROOT}/tmp"
 
 # -----------------------------
 # Sanity checks
 # -----------------------------
 [[ $EUID -eq 0 ]] || { echo "ERROR: must be run as root"; exit 1; }
-mountpoint -q "$BAK_ROOT" || { echo "ERROR: $BAK_ROOT is not mounted"; exit 1; }
+mountpoint -q "$BACKUP_ROOT" || { echo "ERROR: $BACKUP_ROOT is not mounted"; exit 1; }
 
-if ! yq eval '.' /dev/null >/dev/null 2>&1; then
-  echo "ERROR: yq v4 is required (yq eval)" >&2
-  exit 1
-fi
+command -v yq >/dev/null || { echo "ERROR: yq v4 required"; exit 1; }
+command -v jq >/dev/null || { echo "ERROR: jq required"; exit 1; }
 
 # -----------------------------
 # User & group
@@ -98,29 +91,33 @@ usermod -aG "$FSBACKUP_GROUP" "$FSBACKUP_USER"
 # -----------------------------
 mkdir -p \
   /etc/fsbackup \
-  /usr/local/lib/fsbackup \
   /usr/local/sbin \
   /var/lib/fsbackup/.ssh \
   /var/lib/fsbackup/log \
-  /var/lib/fsbackup/manifests \
-  "$TMP_DIR" \
-  "$SNAPSHOT_DIR"
+  "$SNAPSHOT_DIR" \
+  "$TMP_DIR"
 
 # -----------------------------
 # Install / update scripts
 # -----------------------------
 if [[ "$UPDATE" -eq 1 ]]; then
-  echo "Update mode enabled — installing scripts"
+  echo "Installing fsbackup scripts"
 
   [[ -d "$SRC_BIN_DIR" ]] || { echo "ERROR: missing $SRC_BIN_DIR"; exit 1; }
-  [[ -d "$SRC_LIB_DIR" ]] || { echo "ERROR: missing $SRC_LIB_DIR"; exit 1; }
 
   install -o root -g root -m 0755 \
     "$SRC_BIN_DIR"/fs-*.sh /usr/local/sbin/
-
-  install -o root -g root -m 0644 \
-    "$SRC_LIB_DIR"/fs-exporter.sh /usr/local/lib/fsbackup/
 fi
+
+# -----------------------------
+# Verify required scripts
+# -----------------------------
+for b in "${REQUIRED_BINS[@]}"; do
+  if [[ ! -x "/usr/local/sbin/$b" ]]; then
+    echo "ERROR: missing /usr/local/sbin/$b"
+    exit 1
+  fi
+done
 
 # -----------------------------
 # Ownership & permissions
@@ -128,25 +125,22 @@ fi
 chown root:"$FSBACKUP_GROUP" /etc/fsbackup
 chmod 750 /etc/fsbackup
 
-chown -R root:root /usr/local/lib/fsbackup
-chmod 755 /usr/local/lib/fsbackup
-
-for f in "${REQUIRED_BINS[@]}"; do
-  [[ -f "$f" ]] && chown root:root "$f" && chmod 755 "$f"
-done
-
 chown -R "$FSBACKUP_USER":"$FSBACKUP_GROUP" /var/lib/fsbackup
 chmod 700 /var/lib/fsbackup
 chmod 700 /var/lib/fsbackup/.ssh
-chmod 750 /var/lib/fsbackup/log /var/lib/fsbackup/manifests
+chmod 750 /var/lib/fsbackup/log
 
-chown -R "$FSBACKUP_USER":"$FSBACKUP_GROUP" "$TMP_DIR" "$SNAPSHOT_DIR"
-chmod 750 "$TMP_DIR" "$SNAPSHOT_DIR"
+chown -R "$FSBACKUP_USER":"$FSBACKUP_GROUP" "$SNAPSHOT_DIR" "$TMP_DIR"
+chmod 2770 "$SNAPSHOT_DIR"
+chmod 2770 "$TMP_DIR"
 
-# Config files
-[[ -f /etc/fsbackup/targets.yml ]]     && chown root:"$FSBACKUP_GROUP" /etc/fsbackup/targets.yml && chmod 640 /etc/fsbackup/targets.yml
-[[ -f /etc/fsbackup/fsbackup.env ]]    && chown root:"$FSBACKUP_GROUP" /etc/fsbackup/fsbackup.env && chmod 640 /etc/fsbackup/fsbackup.env
-[[ -f /etc/fsbackup/credentials.env ]] && chown root:"$FSBACKUP_GROUP" /etc/fsbackup/credentials.env && chmod 600 /etc/fsbackup/credentials.env
+# Config files (if present)
+for f in targets.yml fsbackup.conf credentials.env; do
+  if [[ -f "/etc/fsbackup/$f" ]]; then
+    chown root:"$FSBACKUP_GROUP" "/etc/fsbackup/$f"
+    chmod 640 "/etc/fsbackup/$f"
+  fi
+done
 
 # -----------------------------
 # SSH key (idempotent)
@@ -168,8 +162,8 @@ chmod 644 "${SSH_KEY_PATH}.pub"
 # node_exporter textfile dir
 # -----------------------------
 mkdir -p "$NODE_EXPORTER_TEXTFILE"
-chown "$FSBACKUP_USER":"$FSBACKUP_GROUP" "$NODE_EXPORTER_TEXTFILE"
-chmod 2755 "$NODE_EXPORTER_TEXTFILE"
+chown root:"$FSBACKUP_GROUP" "$NODE_EXPORTER_TEXTFILE"
+chmod 2775 "$NODE_EXPORTER_TEXTFILE"
 
 # -----------------------------
 # Write test
@@ -190,7 +184,7 @@ rm -f \
 echo
 echo "fsbackup bootstrap complete."
 echo "Backup user:   $FSBACKUP_USER"
-echo "Snapshots:     $SNAPSHOT_DIR"
+echo "Snapshot root: $SNAPSHOT_DIR"
 echo "Temp dir:      $TMP_DIR"
 echo
 echo "SSH public key to install on source hosts:"
