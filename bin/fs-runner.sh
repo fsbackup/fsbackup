@@ -156,7 +156,9 @@ for t in "${TARGETS[@]}"; do
   [[ "$REPLACE" -eq 0 ]] && RSYNC_CMD+=(--ignore-existing)
   [[ -n "$rsync_opts" ]] && RSYNC_CMD+=($rsync_opts)
 
-  EXCLUDE_FILE="$(mktemp)"
+  
+  EXCLUDE_FILE="$(mktemp /tmp/fsbackup-exclude.XXXXXX)"
+  RSYNC_ERR_FILE="$(mktemp /tmp/fsbackup-rsyncerr.XXXXXX)"
   : >"$EXCLUDE_FILE"
 
   EXCLUDES_ADDED=0
@@ -167,13 +169,13 @@ for t in "${TARGETS[@]}"; do
     rm -f rsync.err
 
     if is_local_host "$host"; then
-      "${RSYNC_CMD[@]}" --exclude-from="$EXCLUDE_FILE" "${src%/}/" "$DEST/" 2>rsync.err && break
+      "${RSYNC_CMD[@]}" --exclude-from="$EXCLUDE_FILE" "${src%/}/" "$DEST/" 2>"$RSYNC_ERR_FILE" && break
     else
-      "${RSYNC_CMD[@]}" --exclude-from="$EXCLUDE_FILE" "${BACKUP_SSH_USER}@${host}:${src%/}/" "$DEST/" 2>rsync.err && break
+      "${RSYNC_CMD[@]}" --exclude-from="$EXCLUDE_FILE" "${BACKUP_SSH_USER}@${host}:${src%/}/" "$DEST/" 2>"$RSYNC_ERR_FILE" && break
     fi
 
     # find first permission-denied path (sender opendir)
-    err_path="$(grep -oE 'opendir "([^"]+)" failed: Permission denied' rsync.err | sed -E 's/opendir "([^"]+)".*/\1/' | head -n1)"
+    err_path="$(grep -oE 'opendir "([^"]+)" failed: Permission denied' "$RSYNC_ERR_FILE" | sed -E 's/opendir "([^"]+)".*/\1/' | head -n1)"
 
     # If it wasn't the excludable error, stop retrying
     if [[ -z "$err_path" ]]; then
@@ -183,7 +185,7 @@ for t in "${TARGETS[@]}"; do
     if (( TOTAL_EXCLUDES >= MAX_EXCLUDES )); then
       log "$id" "ERROR exclude ceiling reached (${MAX_EXCLUDES}). Last path: ${err_path}"
       FAILED=$((FAILED+1))
-      rm -f rsync.err "$EXCLUDE_FILE"
+      rm -f "$RSYNC_ERR_FILE" "$EXCLUDE_FILE"
       continue 2
     fi
 
