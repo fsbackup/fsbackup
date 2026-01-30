@@ -2,20 +2,24 @@
 set -u
 set -o pipefail
 
+# =============================================================================
+# fs-runner.sh — snapshot executor with metrics
+# =============================================================================
+
 . /etc/fsbackup/fsbackup.conf
 
 CONFIG_FILE="/etc/fsbackup/targets.yml"
-
 LOG_DIR="/var/lib/fsbackup/log"
 LOG_FILE="${LOG_DIR}/backup.log"
 
-NODE_TEXTFILE="/var/lib/node_exporter/textfile_collector"
-PROM_OUT="${NODE_TEXTFILE}/fsbackup_excludes.prom"
+NODE_TEXTFILE_DIR="/var/lib/node_exporter/textfile_collector"
+PROM_TMP="$(mktemp)"
+PROM_OUT="${NODE_TEXTFILE_DIR}/fsbackup_runner_${CLASS:-unknown}.prom"
 
 BACKUP_SSH_USER="backup"
 MAX_EXCLUDES=15
 
-SNAPSHOT_TYPE="${1:-}"
+SNAPSHOT_TYPE="$1"   # daily | weekly | monthly
 shift || true
 
 CLASS=""
@@ -27,56 +31,34 @@ usage() {
   exit 2
 }
 
-[[ "$SNAPSHOT_TYPE" =~ ^(daily|weekly|monthly)$ ]] || usage
-
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --class) CLASS="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
-    --replace-existing|--replace) REPLACE=1; shift ;;
+    --replace-existing) REPLACE=1; shift ;;
     *) usage ;;
   esac
 done
 
 [[ -n "$CLASS" ]] || usage
-
-command -v yq >/dev/null || { echo "yq not found"; exit 2; }
-command -v jq >/dev/null || { echo "jq not found"; exit 2; }
-command -v ssh >/dev/null || { echo "ssh not found"; exit 2; }
-command -v rsync >/dev/null || { echo "rsync not found"; exit 2; }
-
 mkdir -p "$LOG_DIR"
 
 log() {
   local id="$1"; shift
-  echo "$(date +%Y-%m-%dT%H:%M:%S%z) [$id] $*" | tee -a "$LOG_FILE" >/dev/null
+  echo "$(date +%Y-%m-%dT%H:%M:%S%z) [$id] $*" | tee -a "$LOG_FILE"
 }
 
 is_local_host() {
   local h="$1"
-  local short fqdn
-  short="$(hostname -s)"
-  fqdn="$(hostname -f 2>/dev/null || true)"
-
   [[ "$h" == "localhost" ]] && return 0
-  [[ "$h" == "$short" ]] && return 0
-  [[ -n "$fqdn" && "$h" == "$fqdn" ]] && return 0
+  [[ "$h" == "$(hostname -s)" ]] && return 0
+  [[ "$h" == "$(hostname -f 2>/dev/null)" ]] && return 0
 
-  if getent hosts "$h" >/dev/null 2>&1; then
-    local target_ips local_ips ip lip
-    target_ips="$(getent hosts "$h" | awk '{print $1}')"
-    local_ips="$(hostname -I 2>/dev/null || true)"
-    for ip in $target_ips; do
-      for lip in $local_ips; do
-        [[ "$ip" == "$lip" ]] && return 0
-      done
-    done
-  fi
-
+  for ip in $(hostname -I 2>/dev/null); do
+    getent hosts "$h" | awk '{print $1}' | grep -qx "$ip" && return 0
+  done
   return 1
 }
-
-SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=5)
 
 mapfile -t TARGETS < <(
   yq eval -o=json ".${CLASS}[]" "$CONFIG_FILE" | jq -c .
@@ -85,16 +67,13 @@ mapfile -t TARGETS < <(
 DATE_STR="$(date +%F)"
 DEST_BASE="${SNAPSHOT_ROOT}/${SNAPSHOT_TYPE}/${DATE_STR}/${CLASS}"
 
-echo
-echo "fs-runner starting"
+echo "$(date +%Y-%m-%dT%H:%M:%S%z) fs-runner starting"
 echo "  Snapshot type: $SNAPSHOT_TYPE"
 echo "  Class:         $CLASS"
 echo "  Targets:       ${#TARGETS[@]}"
 echo "  Dry-run:       $DRY_RUN"
 echo "  Replace:       $REPLACE"
 echo
-
-mkdir -p "$DEST_BASE" || { echo "Cannot create destination: $DEST_BASE"; exit 2; }
 
 # =============================================================================
 # PREFLIGHT
@@ -109,10 +88,10 @@ for t in "${TARGETS[@]}"; do
   if is_local_host "$host"; then
     [[ -e "$src" ]] || { echo "→ $id FAIL (missing)"; exit 1; }
   else
-    ssh "${SSH_OPTS[@]}" "${BACKUP_SSH_USER}@${host}" "test -e '$src'" \
-      >/dev/null 2>&1 || { echo "→ $id FAIL (ssh/path)"; exit 1; }
+    ssh -o BatchMode=yes -o StrictHostKeyChecking=yes \
+      "${BACKUP_SSH_USER}@${host}" "test -e '$src'" \
+      || { echo "→ $id FAIL (ssh/path)"; exit 1; }
   fi
-
   echo "→ $id OK"
 done
 
@@ -127,18 +106,6 @@ TOTAL=0
 SUCCEEDED=0
 FAILED=0
 
-PROM_TMP="$(mktemp)"
-
-# Prometheus headers
-cat >"$PROM_TMP" <<'EOF'
-# HELP fsbackup_excludes_total Total auto-excluded paths for this target in this run
-# TYPE fsbackup_excludes_total gauge
-# HELP fsbackup_excludes_added_last_run Count of excludes added during retries for this target in this run
-# TYPE fsbackup_excludes_added_last_run gauge
-# HELP fsbackup_auto_exclude_used Whether auto-exclude logic was used (1=yes,0=no)
-# TYPE fsbackup_auto_exclude_used gauge
-EOF
-
 for t in "${TARGETS[@]}"; do
   ((TOTAL++))
   id="$(jq -r '.id' <<<"$t")"
@@ -147,83 +114,85 @@ for t in "${TARGETS[@]}"; do
   rsync_opts="$(jq -r '.rsync_opts // empty' <<<"$t")"
 
   DEST="${DEST_BASE}/${id}"
+  EXCLUDE_FILE="$(mktemp)"
+  RSYNC_ERR="$(mktemp)"
+
   mkdir -p "$DEST"
 
   log "$id" "Starting snapshot (${SNAPSHOT_TYPE}) from ${host}:${src}"
 
-  RSYNC_CMD=(rsync -a --delete --timeout=30)
+  RSYNC_CMD=(rsync -a --delete)
+
   [[ "$DRY_RUN" -eq 1 ]] && RSYNC_CMD+=(-n)
   [[ "$REPLACE" -eq 0 ]] && RSYNC_CMD+=(--ignore-existing)
   [[ -n "$rsync_opts" ]] && RSYNC_CMD+=($rsync_opts)
 
-  
-  EXCLUDE_FILE="$(mktemp /tmp/fsbackup-exclude.XXXXXX)"
-  RSYNC_ERR_FILE="$(mktemp /tmp/fsbackup-rsyncerr.XXXXXX)"
-  : >"$EXCLUDE_FILE"
-
-  EXCLUDES_ADDED=0
-  AUTO_EXCLUDE_USED=0
   TOTAL_EXCLUDES=0
+  AUTO_EXCLUDE_USED=0
 
   while true; do
-    rm -f rsync.err
-
     if is_local_host "$host"; then
-      "${RSYNC_CMD[@]}" --exclude-from="$EXCLUDE_FILE" "${src%/}/" "$DEST/" 2>"$RSYNC_ERR_FILE" && break
+      "${RSYNC_CMD[@]}" \
+        --exclude-from="$EXCLUDE_FILE" \
+        "${src%/}/" "$DEST/" 2>"$RSYNC_ERR" && break
     else
-      "${RSYNC_CMD[@]}" --exclude-from="$EXCLUDE_FILE" "${BACKUP_SSH_USER}@${host}:${src%/}/" "$DEST/" 2>"$RSYNC_ERR_FILE" && break
+      "${RSYNC_CMD[@]}" \
+        --exclude-from="$EXCLUDE_FILE" \
+        "${BACKUP_SSH_USER}@${host}:${src%/}/" "$DEST/" 2>"$RSYNC_ERR" && break
     fi
 
-    # find first permission-denied path (sender opendir)
-    err_path="$(grep -oE 'opendir "([^"]+)" failed: Permission denied' "$RSYNC_ERR_FILE" | sed -E 's/opendir "([^"]+)".*/\1/' | head -n1)"
+    err_path="$(grep -oE '/[^"]+' "$RSYNC_ERR" | head -n1)"
 
-    # If it wasn't the excludable error, stop retrying
-    if [[ -z "$err_path" ]]; then
-      break
-    fi
+    [[ -z "$err_path" ]] && break
 
     if (( TOTAL_EXCLUDES >= MAX_EXCLUDES )); then
-      log "$id" "ERROR exclude ceiling reached (${MAX_EXCLUDES}). Last path: ${err_path}"
-      FAILED=$((FAILED+1))
-      rm -f "$RSYNC_ERR_FILE" "$EXCLUDE_FILE"
+      log "$id" "ERROR exclude ceiling reached (${MAX_EXCLUDES}) at ${err_path}"
+      ((FAILED++))
       continue 2
     fi
 
-    # Convert absolute path to relative-to-src where possible
-    rel="$err_path"
-    rel="${rel#${src%/}/}"
-    rel="${rel#/}"
-
-    echo "${rel}/**" >>"$EXCLUDE_FILE"
+    echo "${err_path}/**" >>"$EXCLUDE_FILE"
     log "$id" "WARN auto-excluding path: ${err_path}"
-
     ((TOTAL_EXCLUDES++))
-    ((EXCLUDES_ADDED++))
     AUTO_EXCLUDE_USED=1
   done
 
-  if [[ $? -eq 0 ]]; then
+  rc=$?
+
+  if [[ $rc -eq 0 ]]; then
     log "$id" "Snapshot completed successfully"
     ((SUCCEEDED++))
+
+    NOW_EPOCH="$(date +%s)"
+    SNAP_BYTES="$(du -sb "$DEST" 2>/dev/null | awk '{print $1}' || echo 0)"
+
+    cat >>"$PROM_TMP" <<EOF
+fsbackup_snapshot_last_success{class="${CLASS}",target="${id}"} ${NOW_EPOCH}
+fsbackup_snapshot_bytes{class="${CLASS}",target="${id}"} ${SNAP_BYTES}
+fsbackup_excludes_total{class="${CLASS}",target="${id}"} ${TOTAL_EXCLUDES}
+fsbackup_auto_exclude_used{class="${CLASS}",target="${id}"} ${AUTO_EXCLUDE_USED}
+EOF
   else
-    log "$id" "ERROR snapshot failed (see rsync.err details during run)"
+    log "$id" "ERROR snapshot failed"
     ((FAILED++))
   fi
 
-  cat >>"$PROM_TMP" <<EOF
-fsbackup_excludes_total{target="${id}"} ${TOTAL_EXCLUDES}
-fsbackup_excludes_added_last_run{target="${id}"} ${EXCLUDES_ADDED}
-fsbackup_auto_exclude_used{target="${id}"} ${AUTO_EXCLUDE_USED}
-EOF
-
-  rm -f rsync.err "$EXCLUDE_FILE"
+  rm -f "$RSYNC_ERR" "$EXCLUDE_FILE"
 done
 
-# Atomic write of prometheus metrics
-tmp2="$(mktemp)"
-cat "$PROM_TMP" >"$tmp2"
-rm -f "$PROM_TMP"
-mv "$tmp2" "$PROM_OUT" 2>/dev/null || rm -f "$tmp2"
+# =============================================================================
+# RUN-LEVEL METRICS
+# =============================================================================
+EXIT_CODE=0
+[[ "$FAILED" -gt 0 ]] && EXIT_CODE=1
+
+cat >>"$PROM_TMP" <<EOF
+fsbackup_runner_success{class="${CLASS}"} ${SUCCEEDED}
+fsbackup_runner_failed{class="${CLASS}"} ${FAILED}
+fsbackup_runner_last_exit_code{class="${CLASS}"} ${EXIT_CODE}
+EOF
+
+mv "$PROM_TMP" "${NODE_TEXTFILE_DIR}/fsbackup_runner_${CLASS}.prom"
 
 echo
 echo "fs-runner summary"
@@ -232,5 +201,5 @@ echo "  Succeeded: $SUCCEEDED"
 echo "  Failed:    $FAILED"
 echo
 
-exit $([[ "$FAILED" -gt 0 ]] && echo 1 || echo 0)
+exit "$EXIT_CODE"
 

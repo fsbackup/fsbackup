@@ -22,6 +22,8 @@ class1:
   - id: prometheus.data
     host: denhpsvr1
     source: /docker/volumes/prometheus_data
+    type: dir
+    rsync_opts: "--exclude=_data/victoriametrics_data/cache/**"
 
   - id: registry.data
     host: denhpsvr1
