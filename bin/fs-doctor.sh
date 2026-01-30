@@ -58,6 +58,9 @@ is_local_host() {
   return 1
 }
 
+is_excludable_rsync_error() {
+  grep -qE 'rsync: \[sender\] opendir ".+" failed: Permission denied' <<<"$1"
+}
 
 TOTAL="${#TARGETS[@]}"
 PASS=0
@@ -111,23 +114,23 @@ for t in "${TARGETS[@]}"; do
   fi
 
   # rsync dry-run
-  RSYNC_CMD=(rsync -a -n)
-  [[ -n "$rsync_opts" ]] && RSYNC_CMD+=($rsync_opts)
-
-  if "${RSYNC_CMD[@]}" \
+  RSYNC_ERR="$(
+    "${RSYNC_CMD[@]}" \
       "${BACKUP_SSH_USER}@${host}:${src%/}/" \
-      "/tmp/fsdoctor_${id}" >/dev/null 2>&1; then
+      "/tmp/fsdoctor_${id}" 2>&1 >/dev/null
+  )"
+
+  if [[ $? -eq 0 ]]; then
     printf "%-28s OK     ssh+path+rsync dry-run OK\n" "$id"
     ((PASS++))
+  elif is_excludable_rsync_error "$RSYNC_ERR"; then
+    printf "%-28s WARN   rsync permission-denied (auto-excludable)\n" "$id"
+    ((PASS++))
   else
-    if [[ "$rsync_opts" == *"--ignore-errors"* ]]; then
-      printf "%-28s OK     rsync warnings ignored\n" "$id"
-      ((PASS++))
-    else
-      printf "%-28s FAIL   rsync failed\n" "$id"
-      ((FAIL++))
-    fi
+    printf "%-28s FAIL   rsync failed\n" "$id"
+    ((FAIL++))
   fi
+
 done
 
 echo
@@ -136,6 +139,14 @@ echo "  Total: $TOTAL"
 echo "  OK:    $PASS"
 echo "  FAIL:  $FAIL"
 echo
+NODEEXP_DIR="/var/lib/node_exporter/textfile_collector"
+
+if [[ -d "$NODEEXP_DIR" && -r "$NODEEXP_DIR" && -x "$NODEEXP_DIR" ]]; then
+  echo "node_exporter_textfile_access 1"
+else
+  echo "WARN: node_exporter cannot read textfile collector"
+  echo "node_exporter_textfile_access 0"
+fi
 
 exit 0
 
