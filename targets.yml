@@ -19,6 +19,8 @@ class1:
   - id: paperlessngx.data
     host: fs
     source: /docker/volumes/paperlessngx_data
+    type: dir
+    rsync_opts: "--exclude=_data/db"
 
   - id: paperlessngx.consume
     host: fs
@@ -37,12 +39,6 @@ class1:
   # =============
   # denhpsvr1
   # =============
-
-  - id: nginx.data
-    host: denhpsvr1
-    source: /docker/volumes/nginx_data
-    type: dir
-    rsync_opts: "--exclude=_data/nginx/modules"
 
   - id: mosquitto.data
     host: denhpsvr1
@@ -92,10 +88,6 @@ class1:
     host: denhpsvr2
     source: /docker/volumes/owntracks_data
 
-  - id: paperlessngx.data
-    host: fs
-    source: /docker/volumes/paperlessngx_data
-
   # =============
   # hs
   # =============
@@ -110,16 +102,32 @@ class1:
   # ns1
   # =============
 
-  - id: bind.zones
+  - id: ns1.bind.zones
     host: ns1
     source: /etc/bind/zones
 
-  - id: bind.keys
+  - id: ns1.bind.keys
     host: ns1
     source: /etc/bind/keys
 
-  - id: bind.cache
+  - id: ns1.bind.cache
     host: ns1
+    source: /var/cache/bind
+
+  # =============
+  # ns2
+  # =============
+
+  - id: ns2.bind.zones
+    host: ns2
+    source: /etc/bind/zones
+
+  - id: ns2.bind.keys
+    host: ns2
+    source: /etc/bind/keys
+
+  - id: ns2.bind.cache
+    host: ns2
     source: /var/cache/bind
 
   # =============
@@ -167,20 +175,42 @@ class2:
   # ns1
   # =================
 
-  - id: bind.named.conf
+  - id: ns1.bind.named.conf
     host: ns1
     source: /etc/bind
     type: dir
     rsync_opts: "--exclude=rndc.conf"
 
-  - id: webmin.config
+  - id: ns1.webmin.config
     host: ns1
     source: /etc/webmin
     type: dir
     rsync_opts: "--no-owner --no-group --no-perms --omit-dir-times"
 
-  - id: webmin.state
+  - id: ns1.webmin.state
     host: ns1
+    source: /var/webmin
+    type: dir
+    rsync_opts: "--no-owner --no-group --no-perms --omit-dir-times --exclude=webmin.log --exclude=modules/authentic-theme/"
+
+  # =================
+  # ns2
+  # =================
+
+  - id: ns2.bind.named.conf
+    host: ns2
+    source: /etc/bind
+    type: dir
+    rsync_opts: "--exclude=rndc.conf"
+
+  - id: ns2.webmin.config
+    host: ns2
+    source: /etc/webmin
+    type: dir
+    rsync_opts: "--no-owner --no-group --no-perms --omit-dir-times"
+
+  - id: ns2.webmin.state
+    host: ns2
     source: /var/webmin
     type: dir
     rsync_opts: "--no-owner --no-group --no-perms --omit-dir-times --exclude=webmin.log --exclude=modules/authentic-theme/"
@@ -189,7 +219,7 @@ class2:
   # rp
   # =============
 
-  - id: nginx.config
+  - id: rp.nginx.config
     host: rp
     source: /etc/nginx
 
@@ -201,6 +231,12 @@ class2:
     host: denhpsvr1
     source: /docker/stacks
 
+  - id: nginx.data
+    host: denhpsvr1
+    source: /docker/volumes/nginx_data
+    type: dir
+    rsync_opts: "--exclude=_data/nginx/modules"
+      
   # =============
   # denhpsvr2
   # =============
