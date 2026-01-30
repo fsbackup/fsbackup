@@ -65,7 +65,7 @@ class1:
 
   - id: paperlessngx.consume
     host: fs
-    source: /shr/paperless
+    source: /consume
 
   - id: apache.git.repos
     host: fs
@@ -98,6 +98,8 @@ class1:
   - id: nginx.letsencrypt
     host: rp
     source: /etc/letsencrypt
+    type: dir
+    rsync_opts: "--exclude=archive/ --exclude=live/*/privkey.pem --exclude=keys/"
 
 class2:
   - id: homeassistant.backups
@@ -126,7 +128,7 @@ class2:
     host: ns1
     source: /var/webmin
     type: dir
-    rsync_opts: "--no-owner --no-group --no-perms --omit-dir-times"
+    rsync_opts: "--no-owner --no-group --no-perms --omit-dir-times --exclude=webmin.log --exclude=modules/authentic-theme/"
 
   - id: nginx.config
     host: rp
