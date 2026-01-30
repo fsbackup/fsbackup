@@ -20,7 +20,7 @@ class1:
     host: fs
     source: /docker/volumes/paperlessngx_data
     type: dir
-    rsync_opts: "--exclude=_data/db"
+    rsync_opts: "--exclude=_data/db --exclude=_data/redisdata/dump.rdb"
 
   - id: paperlessngx.consume
     host: fs
@@ -31,10 +31,11 @@ class1:
     source: /var/www/src
     type: dir
 
-  - id: plex.config
-    host: fs
-    source: /var/lib/plexmediaserver/Library/Application Support/Plex Media Server
-    type: dir
+      #- id: plex.config
+      #host: fs
+      #source: /var/lib/plexmediaserver/Library/Application Support/Plex Media Server
+      #type: dir
+      #rsync_opts: "--exclude=.LocalAdminToken"
 
   # =============
   # denhpsvr1
@@ -62,8 +63,7 @@ class1:
     host: denhpsvr1
     source: /docker/volumes/zabbix_server_data
     type: dir
-    rsync_opts: "--exclude=_data/zabbix_db"
-
+    rsync_opts: "--exclude=_data/zabbix_db/postmaster.pid"
   # =============
   # denhpsvr2
   # =============
@@ -117,10 +117,6 @@ class1:
   # =============
   # ns2
   # =============
-
-  - id: ns2.bind.zones
-    host: ns2
-    source: /etc/bind/zones
 
   - id: ns2.bind.keys
     host: ns2
