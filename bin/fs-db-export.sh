@@ -2,115 +2,133 @@
 set -euo pipefail
 
 # =============================================================================
-# fs-db-export.sh
-# Usage:
-#   fs-db-export.sh /etc/fsbackup/db/<app>.env
+# fs-db-export.sh — database export helper (mysql / mariadb / postgres)
+#
+# Environment variables (required):
+#   DB_ENGINE=mysql|mariadb|postgres
+#   DB_CONTAINER=<container name>
+#   DB_NAME=<database name>
+#   DB_USER=<db user>
+#   DB_PASSWORD=<db password>
+#   EXPORT_ROOT=/exports/<app>
+#
+# Optional:
+#   DB_CLIENT_IMAGE (default: mariadb:11 for mariadb, mysql:8 for mysql)
+#   RETENTION=14
 # =============================================================================
 
-ENV_FILE="${1:-}"
-[[ -f "$ENV_FILE" ]] || { echo "Missing env file"; exit 2; }
+# -----------------------------
+# Config
+# -----------------------------
+DB_ENGINE="${DB_ENGINE:?missing DB_ENGINE}"
+DB_CONTAINER="${DB_CONTAINER:?missing DB_CONTAINER}"
+DB_NAME="${DB_NAME:?missing DB_NAME}"
+DB_USER="${DB_USER:?missing DB_USER}"
+DB_PASSWORD="${DB_PASSWORD:?missing DB_PASSWORD}"
+EXPORT_ROOT="${EXPORT_ROOT:?missing EXPORT_ROOT}"
 
-# shellcheck disable=SC1090
-source "$ENV_FILE"
+RETENTION="${RETENTION:-14}"
+HOSTNAME="$(hostname -s)"
+TIMESTAMP="$(date +%F_%H-%M-%S)"
+EPOCH_NOW="$(date +%s)"
 
-# Required
-: "${DB_ENGINE:?}"
-: "${DB_CONTAINER:?}"
-: "${DB_NAME:?}"
-: "${DB_USER:?}"
-: "${DB_PASSWORD:?}"
-: "${EXPORT_ROOT:?}"
+EXPORT_DIR="${EXPORT_ROOT}"
+EXPORT_FILE="${EXPORT_DIR}/${DB_NAME}_${TIMESTAMP}.sql"
 
-APP="$(basename "$ENV_FILE" .env)"
-METRICS_DIR="/var/lib/node_exporter/textfile_collector"
-METRICS_FILE="${METRICS_DIR}/fsbackup_db_export_${APP}.prom"
-RETENTION_DAYS="${RETENTION_DAYS:-14}"
+NODEEXP_DIR="/var/lib/node_exporter/textfile_collector"
+METRICS_FILE="${NODEEXP_DIR}/fs_db_export_${DB_NAME}.prom"
 
-DATE="$(date +%F_%H%M%S)"
-OUT="${EXPORT_ROOT}/${APP}_${DATE}.sql.gz"
+mkdir -p "$EXPORT_DIR"
+
+# -----------------------------
+# Metrics helpers
+# -----------------------------
+emit_metrics() {
+  local status="$1"      # 0=success,1=failure
+  local size="$2"        # bytes
+  local end_ts="$3"
+
+  tmp="$(mktemp)"
+  cat >"$tmp" <<EOF
+# HELP fs_db_export_success Database export success (1=success,0=failure)
+# TYPE fs_db_export_success gauge
+fs_db_export_success{db="${DB_NAME}",engine="${DB_ENGINE}",host="${HOSTNAME}"} $((status == 0 ? 1 : 0))
+
+# HELP fs_db_export_last_timestamp Last export timestamp (epoch)
+# TYPE fs_db_export_last_timestamp gauge
+fs_db_export_last_timestamp{db="${DB_NAME}",engine="${DB_ENGINE}",host="${HOSTNAME}"} ${end_ts}
+
+# HELP fs_db_export_size_bytes Size of last export in bytes
+# TYPE fs_db_export_size_bytes gauge
+fs_db_export_size_bytes{db="${DB_NAME}",engine="${DB_ENGINE}",host="${HOSTNAME}"} ${size}
+EOF
+
+  chmod 0644 "$tmp"
+  mv "$tmp" "$METRICS_FILE"
+}
+
+# -----------------------------
+# Export logic
+# -----------------------------
 START_TS="$(date +%s)"
+SIZE=0
+STATUS=1
 
-mkdir -p "$EXPORT_ROOT" "$METRICS_DIR"
-umask 007
+echo "[$(date -Is)] Starting ${DB_ENGINE} export for ${DB_NAME}"
 
-status=0
-size=0
+if [[ "$DB_ENGINE" == "mariadb" || "$DB_ENGINE" == "mysql" ]]; then
+  CLIENT_IMAGE="${DB_CLIENT_IMAGE:-mariadb:11}"
 
-# -----------------------------------------------------------------------------
-# Export
-# -----------------------------------------------------------------------------
-if [[ "$DB_ENGINE" == "postgres" ]]; then
-  docker exec -e PGPASSWORD="$DB_PASSWORD" \
-    "$DB_CONTAINER" \
-    pg_dump \
-      --dbname="$DB_NAME" \
-      --username="$DB_USER" \
-      --no-owner \
-      --no-acl \
-      --clean \
-      --if-exists \
-    | gzip -9 > "$OUT" || status=1
-
-elif [[ "$DB_ENGINE" == "mysql" ]]; then
-  docker exec \
-    "$DB_CONTAINER" \
-    mysqldump \
-      -u"$DB_USER" \
-      -p"$DB_PASSWORD" \
+  docker run --rm \
+    --network "container:${DB_CONTAINER}" \
+    -v "${EXPORT_DIR}:/exports" \
+    -e MYSQL_PWD="${DB_PASSWORD}" \
+    "${CLIENT_IMAGE}" \
+    mariadb-dump \
+      -h 127.0.0.1 \
+      -u "${DB_USER}" \
       --single-transaction \
       --quick \
-      "$DB_NAME" \
-    | gzip -9 > "$OUT" || status=1
+      --routines \
+      --events \
+      --triggers \
+      "${DB_NAME}" \
+      > "${EXPORT_FILE}"
+
+elif [[ "$DB_ENGINE" == "postgres" ]]; then
+  docker exec \
+    -e PGPASSWORD="${DB_PASSWORD}" \
+    "${DB_CONTAINER}" \
+    pg_dump \
+      -U "${DB_USER}" \
+      -F p \
+      "${DB_NAME}" \
+      > "${EXPORT_FILE}"
+
 else
-  echo "Unsupported DB_ENGINE=$DB_ENGINE" >&2
-  exit 3
+  echo "ERROR: unsupported DB_ENGINE=${DB_ENGINE}" >&2
+  exit 2
+fi
+
+# -----------------------------
+# Post-run checks
+# -----------------------------
+if [[ -s "$EXPORT_FILE" ]]; then
+  SIZE="$(stat -c %s "$EXPORT_FILE")"
+  STATUS=0
+  echo "[$(date -Is)] Export completed: ${EXPORT_FILE} (${SIZE} bytes)"
+else
+  echo "ERROR: export file missing or empty: ${EXPORT_FILE}" >&2
 fi
 
 END_TS="$(date +%s)"
-duration=$((END_TS - START_TS))
 
-if [[ $status -eq 0 ]]; then
-  size="$(stat -c '%s' "$OUT")"
-  chown -R backup:backup "$OUT"
-  chmod 640 "$OUT"
-fi
+emit_metrics "$STATUS" "$SIZE" "$END_TS"
 
-# -----------------------------------------------------------------------------
+# -----------------------------
 # Retention
-# -----------------------------------------------------------------------------
-find "$EXPORT_ROOT" -type f -name '*.sql.gz' -mtime "+$RETENTION_DAYS" -delete
-retained="$(ls -1 "$EXPORT_ROOT"/*.sql.gz 2>/dev/null | wc -l)"
+# -----------------------------
+ls -1t "${EXPORT_DIR}"/*.sql 2>/dev/null | tail -n +$((RETENTION + 1)) | xargs -r rm -f
 
-# -----------------------------------------------------------------------------
-# Prometheus metrics (atomic)
-# -----------------------------------------------------------------------------
-tmp="$(mktemp)"
-HOST="$(hostname -s)"
-
-cat >"$tmp" <<EOF
-# HELP fsbackup_db_export_last_success Last DB export success (1=ok,0=fail)
-# TYPE fsbackup_db_export_last_success gauge
-fsbackup_db_export_last_success{host="${HOST}",app="${APP}",engine="${DB_ENGINE}"} $((status==0))
-
-# HELP fsbackup_db_export_last_timestamp Last DB export timestamp (epoch)
-# TYPE fsbackup_db_export_last_timestamp gauge
-fsbackup_db_export_last_timestamp{host="${HOST}",app="${APP}",engine="${DB_ENGINE}"} ${END_TS}
-
-# HELP fsbackup_db_export_last_size_bytes Size of last DB export
-# TYPE fsbackup_db_export_last_size_bytes gauge
-fsbackup_db_export_last_size_bytes{host="${HOST}",app="${APP}",engine="${DB_ENGINE}"} ${size}
-
-# HELP fsbackup_db_export_duration_seconds Duration of DB export
-# TYPE fsbackup_db_export_duration_seconds gauge
-fsbackup_db_export_duration_seconds{host="${HOST}",app="${APP}",engine="${DB_ENGINE}"} ${duration}
-
-# HELP fsbackup_db_export_retained_files Retained DB exports
-# TYPE fsbackup_db_export_retained_files gauge
-fsbackup_db_export_retained_files{host="${HOST}",app="${APP}"} ${retained}
-EOF
-
-chmod 0644 "$tmp"
-mv "$tmp" "$METRICS_FILE"
-
-exit "$status"
+exit "$STATUS"
 
