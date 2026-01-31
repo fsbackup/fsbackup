@@ -4,30 +4,46 @@ set -euo pipefail
 # =============================================================================
 # fs-db-export.sh — database export helper (mysql / mariadb / postgres)
 #
-# Environment variables (required):
-#   DB_ENGINE=mysql|mariadb|postgres
-#   DB_CONTAINER=<container name>
-#   DB_NAME=<database name>
-#   DB_USER=<db user>
-#   DB_PASSWORD=<db password>
-#   EXPORT_ROOT=/exports/<app>
+# Usage:
+#   fs-db-export.sh /path/to/db.env
 #
-# Optional:
-#   DB_CLIENT_IMAGE (default: mariadb:11 for mariadb, mysql:8 for mysql)
-#   RETENTION=14
+# The env file must define:
+#   DB_ENGINE=mysql|mariadb|postgres
+#   DB_CONTAINER
+#   DB_NAME
+#   DB_USER
+#   DB_PASSWORD
+#   EXPORT_ROOT
 # =============================================================================
 
+ENV_FILE="${1:-}"
+
+if [[ -z "$ENV_FILE" || ! -f "$ENV_FILE" ]]; then
+  echo "Usage: $0 /path/to/db.env" >&2
+  exit 2
+fi
+
 # -----------------------------
-# Config
+# Load env (shell-safe)
 # -----------------------------
-DB_ENGINE="${DB_ENGINE:?missing DB_ENGINE}"
-DB_CONTAINER="${DB_CONTAINER:?missing DB_CONTAINER}"
-DB_NAME="${DB_NAME:?missing DB_NAME}"
-DB_USER="${DB_USER:?missing DB_USER}"
-DB_PASSWORD="${DB_PASSWORD:?missing DB_PASSWORD}"
-EXPORT_ROOT="${EXPORT_ROOT:?missing EXPORT_ROOT}"
+set -a
+# shellcheck disable=SC1090
+source "$ENV_FILE"
+set +a
+
+# -----------------------------
+# Required vars
+# -----------------------------
+: "${DB_ENGINE:?missing DB_ENGINE}"
+: "${DB_CONTAINER:?missing DB_CONTAINER}"
+: "${DB_NAME:?missing DB_NAME}"
+: "${DB_USER:?missing DB_USER}"
+: "${DB_PASSWORD:?missing DB_PASSWORD}"
+: "${EXPORT_ROOT:?missing EXPORT_ROOT}"
 
 RETENTION="${RETENTION:-14}"
+DB_CLIENT_IMAGE="${DB_CLIENT_IMAGE:-}"
+
 HOSTNAME="$(hostname -s)"
 TIMESTAMP="$(date +%F_%H-%M-%S)"
 EPOCH_NOW="$(date +%s)"
@@ -41,12 +57,12 @@ METRICS_FILE="${NODEEXP_DIR}/fs_db_export_${DB_NAME}.prom"
 mkdir -p "$EXPORT_DIR"
 
 # -----------------------------
-# Metrics helpers
+# Metrics helper
 # -----------------------------
 emit_metrics() {
-  local status="$1"      # 0=success,1=failure
-  local size="$2"        # bytes
-  local end_ts="$3"
+  local status="$1"   # 0=success,1=failure
+  local size="$2"
+  local ts="$3"
 
   tmp="$(mktemp)"
   cat >"$tmp" <<EOF
@@ -56,7 +72,7 @@ fs_db_export_success{db="${DB_NAME}",engine="${DB_ENGINE}",host="${HOSTNAME}"} $
 
 # HELP fs_db_export_last_timestamp Last export timestamp (epoch)
 # TYPE fs_db_export_last_timestamp gauge
-fs_db_export_last_timestamp{db="${DB_NAME}",engine="${DB_ENGINE}",host="${HOSTNAME}"} ${end_ts}
+fs_db_export_last_timestamp{db="${DB_NAME}",engine="${DB_ENGINE}",host="${HOSTNAME}"} ${ts}
 
 # HELP fs_db_export_size_bytes Size of last export in bytes
 # TYPE fs_db_export_size_bytes gauge
@@ -68,11 +84,11 @@ EOF
 }
 
 # -----------------------------
-# Export logic
+# Export
 # -----------------------------
 START_TS="$(date +%s)"
-SIZE=0
 STATUS=1
+SIZE=0
 
 echo "[$(date -Is)] Starting ${DB_ENGINE} export for ${DB_NAME}"
 
@@ -111,24 +127,25 @@ else
 fi
 
 # -----------------------------
-# Post-run checks
+# Validation
 # -----------------------------
 if [[ -s "$EXPORT_FILE" ]]; then
   SIZE="$(stat -c %s "$EXPORT_FILE")"
   STATUS=0
   echo "[$(date -Is)] Export completed: ${EXPORT_FILE} (${SIZE} bytes)"
 else
-  echo "ERROR: export file missing or empty: ${EXPORT_FILE}" >&2
+  echo "ERROR: export file missing or empty" >&2
 fi
 
 END_TS="$(date +%s)"
-
 emit_metrics "$STATUS" "$SIZE" "$END_TS"
 
 # -----------------------------
 # Retention
 # -----------------------------
-ls -1t "${EXPORT_DIR}"/*.sql 2>/dev/null | tail -n +$((RETENTION + 1)) | xargs -r rm -f
+ls -1t "${EXPORT_DIR}"/*.sql 2>/dev/null \
+  | tail -n +$((RETENTION + 1)) \
+  | xargs -r rm -f
 
 exit "$STATUS"
 
