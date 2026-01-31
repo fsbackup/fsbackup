@@ -12,7 +12,7 @@ KEEP_WEEKLY=8
 KEEP_MONTHLY=12
 
 ts(){ date +%Y-%m-%dT%H:%M:%S%z; }
-log(){ printf "%s %s\n" "$(ts)" "$*"; }
+log(){ printf "%s %s\n" "$(ts)" "$*" >&2; }
 
 exec > >(tee -a "$LOG_FILE") 2>&1
 
@@ -55,21 +55,27 @@ log "[fs-retention] Complete (daily=${REM_DAILY}, weekly=${REM_WEEKLY}, monthly=
 
 # Metrics
 now="$(date +%s)"
-cat >"$METRIC_FILE" <<EOF
+tmp="$(mktemp)"
+cat >"$tmp" <<EOF
 # HELP fsbackup_retention_last_run_seconds Unix timestamp of last retention run
 # TYPE fsbackup_retention_last_run_seconds gauge
 fsbackup_retention_last_run_seconds $now
+
 # HELP fsbackup_retention_removed_daily Number of daily snapshot keys removed
 # TYPE fsbackup_retention_removed_daily gauge
 fsbackup_retention_removed_daily $REM_DAILY
+
 # HELP fsbackup_retention_removed_weekly Number of weekly snapshot keys removed
 # TYPE fsbackup_retention_removed_weekly gauge
 fsbackup_retention_removed_weekly $REM_WEEKLY
+
 # HELP fsbackup_retention_removed_monthly Number of monthly snapshot keys removed
 # TYPE fsbackup_retention_removed_monthly gauge
 fsbackup_retention_removed_monthly $REM_MONTHLY
 EOF
-chmod 0644 "$METRIC_FILE" 2>/dev/null || true
+
+chmod 0644 "$tmp"
+mv "$tmp" "$METRIC_FILE"
 
 exit 0
 

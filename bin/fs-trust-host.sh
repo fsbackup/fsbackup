@@ -81,8 +81,6 @@ echo "Host key trusted: $HOST ($FP)"
 mkdir -p "$METRICS_DIR"
 
 {
-  echo "# HELP fsbackup_ssh_host_key_present SSH host key known (1=yes)"
-  echo "# TYPE fsbackup_ssh_host_key_present gauge"
   echo "fsbackup_ssh_host_key_present{host=\"$HOST\",fingerprint=\"$FP\"} 1"
 } >>"$METRIC_FILE"
 
