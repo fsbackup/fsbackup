@@ -40,7 +40,7 @@ TIMESTAMP="$(date +%F_%H-%M-%S)"
 EPOCH_NOW="$(date +%s)"
 
 EXPORT_DIR="${EXPORT_ROOT}"
-EXPORT_FILE="${EXPORT_DIR}/${DB_NAME}_${TIMESTAMP}.sql"
+EXPORT_FILE="${EXPORT_DIR}/${DB_NAME}_${TIMESTAMP}.sql.gz"
 
 NODEEXP_DIR="/var/lib/node_exporter/textfile_collector"
 METRICS_FILE="${NODEEXP_DIR}/fs_db_export_${DB_NAME}.prom"
@@ -48,7 +48,7 @@ METRICS_FILE="${NODEEXP_DIR}/fs_db_export_${DB_NAME}.prom"
 mkdir -p "$EXPORT_DIR"
 
 # ------------------------------------------------------------------
-# Export
+# Export (compressed)
 # ------------------------------------------------------------------
 STATUS=1
 SIZE=0
@@ -67,7 +67,7 @@ if [[ "$DB_ENGINE" == "mariadb" || "$DB_ENGINE" == "mysql" ]]; then
       --events \
       --triggers \
       "${DB_NAME}" \
-      > "${EXPORT_FILE}"
+    | gzip -9 > "${EXPORT_FILE}"
 
 elif [[ "$DB_ENGINE" == "postgres" ]]; then
   docker exec \
@@ -76,7 +76,7 @@ elif [[ "$DB_ENGINE" == "postgres" ]]; then
     pg_dump \
       -U "${DB_USER}" \
       "${DB_NAME}" \
-      > "${EXPORT_FILE}"
+    | gzip -9 > "${EXPORT_FILE}"
 
 else
   echo "ERROR: unsupported DB_ENGINE=${DB_ENGINE}" >&2
@@ -89,13 +89,13 @@ fi
 if [[ -s "$EXPORT_FILE" ]]; then
   SIZE="$(stat -c %s "$EXPORT_FILE")"
   STATUS=0
-  echo "[$(date -Is)] Export complete (${SIZE} bytes)"
+  echo "[$(date -Is)] Export complete (${SIZE} bytes, compressed)"
 else
   echo "ERROR: export file missing or empty" >&2
 fi
 
 # ------------------------------------------------------------------
-# Metrics (simple, stable)
+# Metrics (atomic write)
 # ------------------------------------------------------------------
 tmp="$(mktemp)"
 cat >"$tmp" <<EOF
@@ -107,7 +107,7 @@ fs_db_export_success{db="${DB_NAME}",engine="${DB_ENGINE}",host="${HOST}"} $((ST
 # TYPE fs_db_export_last_timestamp gauge
 fs_db_export_last_timestamp{db="${DB_NAME}",engine="${DB_ENGINE}",host="${HOST}"} ${EPOCH_NOW}
 
-# HELP fs_db_export_size_bytes Size of last DB export
+# HELP fs_db_export_size_bytes Size of last compressed DB export
 # TYPE fs_db_export_size_bytes gauge
 fs_db_export_size_bytes{db="${DB_NAME}",engine="${DB_ENGINE}",host="${HOST}"} ${SIZE}
 EOF
@@ -116,9 +116,9 @@ chmod 0644 "$tmp"
 mv "$tmp" "$METRICS_FILE"
 
 # ------------------------------------------------------------------
-# Retention
+# Retention (keep newest N)
 # ------------------------------------------------------------------
-ls -1t "${EXPORT_DIR}"/*.sql 2>/dev/null \
+ls -1t "${EXPORT_DIR}"/*.sql.gz 2>/dev/null \
   | tail -n +$((RETENTION + 1)) \
   | xargs -r rm -f
 
