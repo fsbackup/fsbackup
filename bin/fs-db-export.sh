@@ -43,7 +43,7 @@ EXPORT_DIR="${EXPORT_ROOT}"
 EXPORT_FILE="${EXPORT_DIR}/${DB_NAME}_${TIMESTAMP}.sql.gz"
 
 NODEEXP_DIR="/var/lib/node_exporter/textfile_collector"
-METRICS_FILE="${NODEEXP_DIR}/fs_db_export_${DB_NAME}.prom"
+METRICS_FILE="${NODEEXP_DIR}/fsbackup_db_export_${DB_NAME}.prom"
 
 mkdir -p "$EXPORT_DIR"
 
