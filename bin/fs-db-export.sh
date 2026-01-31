@@ -100,17 +100,17 @@ fi
 # ------------------------------------------------------------------
 tmp="$(mktemp)"
 cat >"$tmp" <<EOF
-# HELP fs_db_export_success Last DB export success (1=ok,0=fail)
-# TYPE fs_db_export_success gauge
-fs_db_export_success{db="${DB_NAME}",engine="${DB_ENGINE}",host="${HOST}"} $((STATUS == 0))
+# HELP fsbackup_db_export_success Last DB export success (1=ok,0=fail)
+# TYPE fsbackup_db_export_success gauge
+fsbackup_db_export_success{db="${DB_NAME}",engine="${DB_ENGINE}",host="${HOST}"} $((STATUS == 0))
 
-# HELP fs_db_export_last_timestamp Last DB export timestamp
-# TYPE fs_db_export_last_timestamp gauge
-fs_db_export_last_timestamp{db="${DB_NAME}",engine="${DB_ENGINE}",host="${HOST}"} ${EPOCH_NOW}
+# HELP fsbackup_db_export_last_timestamp Last DB export timestamp
+# TYPE fsbackup_db_export_last_timestamp gauge
+fsbackup_db_export_last_timestamp{db="${DB_NAME}",engine="${DB_ENGINE}",host="${HOST}"} ${EPOCH_NOW}
 
-# HELP fs_db_export_size_bytes Size of last compressed DB export
-# TYPE fs_db_export_size_bytes gauge
-fs_db_export_size_bytes{db="${DB_NAME}",engine="${DB_ENGINE}",host="${HOST}"} ${SIZE}
+# HELP fsbackup_db_export_size_bytes Size of last compressed DB export
+# TYPE fsbackup_db_export_size_bytes gauge
+fsbackup_db_export_size_bytes{db="${DB_NAME}",engine="${DB_ENGINE}",host="${HOST}"} ${SIZE}
 EOF
 
 chmod 0644 "$tmp"
