@@ -80,7 +80,8 @@ fsbackup_retention_removed_weekly $REM_WEEKLY
 fsbackup_retention_removed_monthly $REM_MONTHLY
 EOF
 
-chmod 0644 "$tmp"
+chmod 0644 "$tmp" 2>/dev/null || true
+chgrp nodeexp_txt "$tmp"
 mv "$tmp" "$METRIC_FILE"
 
 exit 0

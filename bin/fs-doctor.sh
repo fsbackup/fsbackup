@@ -210,7 +210,8 @@ fsbackup_orphan_snapshots_total{tier="daily"}   ${ORPHAN_COUNT[daily]}
 fsbackup_orphan_snapshots_total{tier="weekly"}  ${ORPHAN_COUNT[weekly]}
 fsbackup_orphan_snapshots_total{tier="monthly"} ${ORPHAN_COUNT[monthly]}
 EOF
-
+chgrp nodeexp_txt "$tmp"
+chmod 0644 "$tmp" 2>/dev/null || true
 mv "$tmp" "$ORPHAN_METRIC" 2>/dev/null || rm -f "$tmp"
 
 exit 0

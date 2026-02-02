@@ -191,7 +191,8 @@ fsbackup_runner_success{class="${CLASS}"} ${SUCCEEDED}
 fsbackup_runner_failed{class="${CLASS}"} ${FAILED}
 fsbackup_runner_last_exit_code{class="${CLASS}"} ${EXIT_CODE}
 EOF
-
+chgrp nodeexp_txt "$PROM_TMP"
+chmod 640 "$PROM_TMP"
 mv "$PROM_TMP" "${NODE_TEXTFILE_DIR}/fsbackup_runner_${CLASS}.prom"
 echo
 echo "fs-runner summary"

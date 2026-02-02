@@ -72,7 +72,7 @@ fsbackup_ssh_host_key_present{host="$HOST",fingerprint="$FP"} 1
 EOF
 
 chown "$FSBACKUP_USER:$GROUP_NODEEXP" "$tmp"
-chmod 0644 "$tmp"
+chmod 0644 "$tmp" 2>/dev/null || true
 mv "$tmp" "$METRIC_FILE"
 
 exit 0

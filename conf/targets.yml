@@ -20,7 +20,7 @@ class1:
     host: fs
     source: /docker/volumes/paperlessngx_data
     type: dir
-    rsync_opts: "--exclude=_data/db --exclude=_data/redisdata/dump.rdb"
+    rsync_opts: "--exclude=_data/db --exclude=_data/redisdata/dump.rdb --exclude=_data/ssh_host_keys/ssh_host_ed25519_key"
 
   - id: paperlessngx.consume
     host: fs
@@ -57,7 +57,7 @@ class1:
     host: denhpsvr1
     source: /docker/volumes/prometheus_data
     type: dir
-    rsync_opts: "--exclude=_data/victoriametrics_data/cache/**"
+    rsync_opts: "--exclude=_data/victoriametrics_data/cache/** --exclude=_data/victoriametrics_data/data/**index.bin"
 
   - id: registry.data
     host: denhpsvr1
