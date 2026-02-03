@@ -159,6 +159,42 @@ scan_root() {
 scan_root "$PRIMARY_SNAPSHOT_ROOT" "primary"
 scan_root "$MIRROR_SNAPSHOT_ROOT" "mirror"
 
+# -----------------------------------------------------------------------------
+# Annual snapshot audit
+# -----------------------------------------------------------------------------
+PRIMARY_ANNUAL="/backup/snapshots/annual"
+MIRROR_ANNUAL="/backup2/snapshots/annual"
+
+annual_ok=1
+
+if [[ -d "$PRIMARY_ANNUAL" ]]; then
+  for y in "$PRIMARY_ANNUAL"/*; do
+    year="$(basename "$y")"
+    p="$PRIMARY_ANNUAL/$year/class1"
+    m="$MIRROR_ANNUAL/$year/class1"
+
+    [[ -d "$p" ]] || annual_ok=0
+    [[ -d "$m" ]] || annual_ok=0
+
+    [[ -d "$PRIMARY_ANNUAL/$year/class2" ]] && annual_ok=0
+
+    if [[ -d "$p" && -d "$m" ]]; then
+      pb="$(du -sb "$p" | awk '{print $1}')"
+      mb="$(du -sb "$m" | awk '{print $1}')"
+      [[ "$pb" == "$mb" ]] || annual_ok=0
+    fi
+  done
+fi
+
+tmp="$(mktemp)"
+cat >"$tmp" <<EOF
+fsbackup_annual_snapshots_healthy ${annual_ok}
+EOF
+
+chgrp nodeexp_txt "$tmp"
+chmod 0644 "$tmp"
+mv "$tmp" "${NODEEXP_DIR}/fsbackup_annual_health.prom"
+
 tmp="$(mktemp)"
 cat >"$tmp" <<EOF
 fsbackup_orphan_snapshots_total{root="primary"} ${ORPHANS[primary]}
