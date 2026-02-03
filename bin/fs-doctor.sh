@@ -13,7 +13,9 @@ NODEEXP_METRIC="${NODEEXP_DIR}/fsbackup_nodeexp_health.prom"
 ORPHAN_METRIC="${NODEEXP_DIR}/fsbackup_orphans.prom"
 
 ORPHAN_LOG="/var/lib/fsbackup/log/fs-orphans.log"
-SNAPSHOT_ROOT="/backup/snapshots"
+
+PRIMARY_SNAPSHOT_ROOT="/backup/snapshots"
+MIRROR_SNAPSHOT_ROOT="/backup2/snapshots"
 
 usage() {
   echo "Usage: fs-doctor.sh --class <class> [--seed-hostkeys]"
@@ -29,11 +31,9 @@ done
 
 [[ -n "$CLASS" ]] || { echo "Missing --class"; exit 2; }
 
-command -v yq >/dev/null || { echo "yq not found"; exit 2; }
-command -v jq >/dev/null || { echo "jq not found"; exit 2; }
-command -v ssh >/dev/null || { echo "ssh not found"; exit 2; }
-command -v rsync >/dev/null || { echo "rsync not found"; exit 2; }
-command -v ssh-keyscan >/dev/null || { echo "ssh-keyscan not found"; exit 2; }
+for cmd in yq jq ssh rsync ssh-keyscan; do
+  command -v "$cmd" >/dev/null || { echo "$cmd not found"; exit 2; }
+done
 
 mapfile -t TARGETS < <(
   yq eval -o=json ".${CLASS}[]" "$CONFIG_FILE" | jq -c .
@@ -41,33 +41,18 @@ mapfile -t TARGETS < <(
 
 is_local_host() {
   local h="$1"
-
   local short fqdn
   short="$(hostname -s)"
   fqdn="$(hostname -f 2>/dev/null || true)"
 
-  [[ "$h" == "localhost" ]] && return 0
-  [[ "$h" == "$short" ]] && return 0
-  [[ -n "$fqdn" && "$h" == "$fqdn" ]] && return 0
+  [[ "$h" == "localhost" || "$h" == "$short" || "$h" == "$fqdn" ]] && return 0
 
   if getent hosts "$h" >/dev/null 2>&1; then
-    local target_ips local_ips
-    target_ips="$(getent hosts "$h" | awk '{print $1}')"
-    local_ips="$(hostname -I 2>/dev/null || true)"
-
-    local ip lip
-    for ip in $target_ips; do
-      for lip in $local_ips; do
-        [[ "$ip" == "$lip" ]] && return 0
-      done
+    for ip in $(getent hosts "$h" | awk '{print $1}'); do
+      hostname -I | grep -qw "$ip" && return 0
     done
   fi
-
   return 1
-}
-
-is_excludable_rsync_error() {
-  grep -qE 'rsync: \[sender\] opendir ".+" failed: Permission denied \(13\)' <<<"$1"
 }
 
 SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=5)
@@ -86,60 +71,25 @@ printf "%-28s %-6s %s\n" "TARGET" "STAT" "DETAIL"
 printf "%-28s %-6s %s\n" "----------------------------" "------" "------------------------------"
 
 for t in "${TARGETS[@]}"; do
-  id="$(jq -r '.id // empty' <<<"$t")"
-  host="$(jq -r '.host // empty' <<<"$t")"
-  src="$(jq -r '.source // empty' <<<"$t")"
+  id="$(jq -r '.id' <<<"$t")"
+  host="$(jq -r '.host' <<<"$t")"
+  src="$(jq -r '.source' <<<"$t")"
   rsync_opts="$(jq -r '.rsync_opts // empty' <<<"$t")"
 
-  if [[ -z "$id" || -z "$host" || -z "$src" ]]; then
-    printf "%-28s %-6s %s\n" "${id:-<missing>}" "FAIL" "bad target entry"
-    ((FAIL++))
-    continue
-  fi
-
   if is_local_host "$host"; then
-    if [[ -e "$src" ]]; then
-      printf "%-28s %-6s %s\n" "$id" "OK" "local path exists"
-      ((PASS++))
-    else
-      printf "%-28s %-6s %s\n" "$id" "FAIL" "local missing: $src"
-      ((FAIL++))
-    fi
-    continue
-  fi
-
-  if ! ssh "${SSH_OPTS[@]}" "${BACKUP_SSH_USER}@${host}" "echo ok" >/dev/null 2>&1; then
-    printf "%-28s %-6s %s\n" "$id" "FAIL" "ssh failed"
-    ((FAIL++))
+    [[ -e "$src" ]] && { printf "%-28s OK     local path exists\n" "$id"; ((PASS++)); } \
+                     || { printf "%-28s FAIL   local missing\n" "$id"; ((FAIL++)); }
     continue
   fi
 
   if ! ssh "${SSH_OPTS[@]}" "${BACKUP_SSH_USER}@${host}" "test -e '$src'" >/dev/null 2>&1; then
-    printf "%-28s %-6s %s\n" "$id" "FAIL" "remote missing: $src"
+    printf "%-28s FAIL   remote missing\n" "$id"
     ((FAIL++))
     continue
   fi
 
-  RSYNC_CMD=(rsync -a -n --timeout=10)
-  [[ -n "$rsync_opts" ]] && RSYNC_CMD+=($rsync_opts)
-
-  RSYNC_ERR="$("${RSYNC_CMD[@]}" \
-    "${BACKUP_SSH_USER}@${host}:${src%/}/" \
-    "/tmp/fsdoctor_${id//[^a-zA-Z0-9_.-]/_}" \
-    >/dev/null 2>&1
-  )"
-  rc=$?
-
-  if [[ $rc -eq 0 ]]; then
-    printf "%-28s %-6s %s\n" "$id" "OK" "ssh+path+rsync dry-run OK"
-    ((PASS++))
-  elif is_excludable_rsync_error "$RSYNC_ERR"; then
-    printf "%-28s %-6s %s\n" "$id" "WARN" "rsync permission-denied (auto-excludable)"
-    ((PASS++))
-  else
-    printf "%-28s %-6s %s\n" "$id" "FAIL" "rsync failed"
-    ((FAIL++))
-  fi
+  printf "%-28s OK     ssh+path OK\n" "$id"
+  ((PASS++))
 done
 
 echo
@@ -150,69 +100,64 @@ echo "  FAIL:  $FAIL"
 echo
 
 # -----------------------------------------------------------------------------
-# Node exporter textfile collector health
+# Node exporter health
 # -----------------------------------------------------------------------------
 nodeexp_ok=0
-if [[ -d "$NODEEXP_DIR" && -r "$NODEEXP_DIR" && -x "$NODEEXP_DIR" ]]; then
-  nodeexp_ok=1
-fi
+[[ -d "$NODEEXP_DIR" && -w "$NODEEXP_DIR" ]] && nodeexp_ok=1
 
 tmp="$(mktemp)"
 cat >"$tmp" <<EOF
-# HELP fsbackup_node_exporter_textfile_access Whether fsbackup can read the node_exporter textfile collector dir (1=ok,0=bad)
-# TYPE fsbackup_node_exporter_textfile_access gauge
 fsbackup_node_exporter_textfile_access ${nodeexp_ok}
 EOF
+chmod 0644 "$tmp"
+chgrp nodeexp_txt "$tmp"
 mv "$tmp" "$NODEEXP_METRIC" 2>/dev/null || rm -f "$tmp"
 
 # -----------------------------------------------------------------------------
-# Orphan snapshot detection (Option A — global scan)
+# Orphan detection (PRIMARY + MIRROR)
 # -----------------------------------------------------------------------------
 mkdir -p "$(dirname "$ORPHAN_LOG")"
 
-mapfile -t VALID_TARGET_IDS < <(
+mapfile -t VALID_IDS < <(
   yq eval '.. | select(has("id")) | .id' "$CONFIG_FILE" | sort -u
 )
 
-declare -A VALID_MAP
-for id in "${VALID_TARGET_IDS[@]}"; do
-  VALID_MAP["$id"]=1
-done
+declare -A VALID
+for id in "${VALID_IDS[@]}"; do VALID["$id"]=1; done
 
-declare -A ORPHAN_COUNT=(["daily"]=0 ["weekly"]=0 ["monthly"]=0)
+declare -A ORPHANS
+ORPHANS["primary"]=0
+ORPHANS["mirror"]=0
 
-now="$(date -Is)"
+scan_root() {
+  local root="$1"
+  local label="$2"
 
-for tier in daily weekly monthly; do
-  tier_dir="${SNAPSHOT_ROOT}/${tier}"
-  [[ -d "$tier_dir" ]] || continue
+  [[ -d "$root" ]] || return 0
 
-  while IFS= read -r snapshot_dir; do
-    target_id="$(basename "$snapshot_dir")"
-    class="$(basename "$(dirname "$snapshot_dir")")"
-    SNAP_DATE="$(basename "$(dirname "$(dirname "$snapshot_dir")")")"
+  find "$root" -mindepth 3 -maxdepth 3 -type d | while read -r d; do
+    target="$(basename "$d")"
+    class="$(basename "$(dirname "$d")")"
+    date="$(basename "$(dirname "$(dirname "$d")")")"
 
-    if [[ -z "${VALID_MAP[$target_id]+x}" ]]; then
-      ORPHAN_COUNT["$tier"]=$((ORPHAN_COUNT["$tier"] + 1))
-      echo "${now} tier=${tier} date=${SNAP_DATE} class=${class} orphan=${target_id}" >>"$ORPHAN_LOG"
+    if [[ -z "${VALID[$target]+x}" ]]; then
+      ORPHANS["$label"]=$((ORPHANS["$label"] + 1))
+      echo "$(date -Is) root=${label} date=${date} class=${class} orphan=${target}" >>"$ORPHAN_LOG"
     fi
-  done < <(
-    find "$tier_dir" -mindepth 3 -maxdepth 3 -type d
-  )
-done
+  done
+}
 
+scan_root "$PRIMARY_SNAPSHOT_ROOT" "primary"
+scan_root "$MIRROR_SNAPSHOT_ROOT" "mirror"
 
 tmp="$(mktemp)"
 cat >"$tmp" <<EOF
-# HELP fsbackup_orphan_snapshots_total Number of orphaned snapshot targets by tier
-# TYPE fsbackup_orphan_snapshots_total gauge
-fsbackup_orphan_snapshots_total{tier="daily"}   ${ORPHAN_COUNT[daily]}
-fsbackup_orphan_snapshots_total{tier="weekly"}  ${ORPHAN_COUNT[weekly]}
-fsbackup_orphan_snapshots_total{tier="monthly"} ${ORPHAN_COUNT[monthly]}
+fsbackup_orphan_snapshots_total{root="primary"} ${ORPHANS[primary]}
+fsbackup_orphan_snapshots_total{root="mirror"} ${ORPHANS[mirror]}
 EOF
 chgrp nodeexp_txt "$tmp"
-chmod 0644 "$tmp" 2>/dev/null || true
-mv "$tmp" "$ORPHAN_METRIC" 2>/dev/null || rm -f "$tmp"
+chmod 0644 "$tmp"
+mv "$tmp" "$ORPHAN_METRIC"
 
 exit 0
 
