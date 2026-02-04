@@ -3,40 +3,40 @@ set -u
 set -o pipefail
 
 # =============================================================================
-# fs-doctor.sh — target health + snapshot audit
+# fs-doctor.sh — target health + snapshot audit + immutability verification
 # =============================================================================
 
 CONFIG_FILE="/etc/fsbackup/targets.yml"
 BACKUP_SSH_USER="backup"
 
 CLASS=""
-SEED_HOSTKEYS=0
 
 NODEEXP_DIR="/var/lib/node_exporter/textfile_collector"
 NODEEXP_METRIC="${NODEEXP_DIR}/fsbackup_nodeexp_health.prom"
 ORPHAN_METRIC="${NODEEXP_DIR}/fsbackup_orphans.prom"
+IMMUTABLE_METRIC="${NODEEXP_DIR}/fsbackup_annual_immutable.prom"
 
 ORPHAN_LOG="/var/lib/fsbackup/log/fs-orphans.log"
+IMMUTABLE_LOG="/var/lib/fsbackup/log/fs-immutable.log"
 
 PRIMARY_SNAPSHOT_ROOT="/backup/snapshots"
 MIRROR_SNAPSHOT_ROOT="/backup2/snapshots"
 
 usage() {
-  echo "Usage: fs-doctor.sh --class <class> [--seed-hostkeys]"
+  echo "Usage: fs-doctor.sh --class <class>"
   exit 2
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --class) CLASS="$2"; shift 2 ;;
-    --seed-hostkeys) SEED_HOSTKEYS=1; shift ;;
     *) usage ;;
   esac
 done
 
 [[ -n "$CLASS" ]] || usage
 
-for cmd in yq jq ssh rsync ssh-keyscan; do
+for cmd in yq jq ssh; do
   command -v "$cmd" >/dev/null || { echo "$cmd not found"; exit 2; }
 done
 
@@ -46,23 +46,16 @@ mapfile -t TARGETS < <(
 
 is_local_host() {
   local h="$1"
-  local short fqdn
-  short="$(hostname -s)"
-  fqdn="$(hostname -f 2>/dev/null || true)"
-
-  [[ "$h" == "localhost" || "$h" == "$short" || "$h" == "$fqdn" ]] && return 0
-
-  if getent hosts "$h" >/dev/null 2>&1; then
-    for ip in $(getent hosts "$h" | awk '{print $1}'); do
-      hostname -I | grep -qw "$ip" && return 0
-    done
-  fi
+  [[ "$h" == "localhost" || "$h" == "$(hostname -s)" || "$h" == "$(hostname -f 2>/dev/null)" ]] && return 0
+  getent hosts "$h" >/dev/null 2>&1 || return 1
+  for ip in $(getent hosts "$h" | awk '{print $1}'); do
+    hostname -I | grep -qw "$ip" && return 0
+  done
   return 1
 }
 
 SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=5)
 
-TOTAL="${#TARGETS[@]}"
 PASS=0
 FAIL=0
 WARN=0
@@ -70,23 +63,21 @@ WARN=0
 echo
 echo "fsbackup doctor"
 echo "  Class:  $CLASS"
-echo "  Items:  $TOTAL"
 echo
 
 printf "%-28s %-6s %s\n" "TARGET" "STAT" "DETAIL"
 printf "%-28s %-6s %s\n" "----------------------------" "------" "------------------------------"
 
 # -----------------------------------------------------------------------------
-# TARGET CHECKS
+# TARGET HEALTH
 # -----------------------------------------------------------------------------
 for t in "${TARGETS[@]}"; do
   id="$(jq -r '.id // empty' <<<"$t")"
   host="$(jq -r '.host // empty' <<<"$t")"
   src="$(jq -r '.source // empty' <<<"$t")"
 
-  # Hard guard against malformed targets
   if [[ -z "$id" || -z "$host" || -z "$src" ]]; then
-    printf "%-28s %-6s %s\n" "${id:-<unknown>}" "WARN" "invalid target entry (missing id/host/source)"
+    printf "%-28s %-6s %s\n" "${id:-<unknown>}" "WARN" "invalid target entry"
     ((WARN++))
     continue
   fi
@@ -102,14 +93,13 @@ for t in "${TARGETS[@]}"; do
     continue
   fi
 
-  if ! ssh "${SSH_OPTS[@]}" "${BACKUP_SSH_USER}@${host}" "test -e '$src'" >/dev/null 2>&1; then
+  if ssh "${SSH_OPTS[@]}" "${BACKUP_SSH_USER}@${host}" "test -e '$src'" >/dev/null 2>&1; then
+    printf "%-28s %-6s %s\n" "$id" "OK" "ssh+path OK"
+    ((PASS++))
+  else
     printf "%-28s %-6s %s\n" "$id" "FAIL" "ssh/path failed"
     ((FAIL++))
-    continue
   fi
-
-  printf "%-28s %-6s %s\n" "$id" "OK" "ssh+path OK"
-  ((PASS++))
 done
 
 echo
@@ -120,23 +110,7 @@ echo "  FAIL:  $FAIL"
 echo
 
 # -----------------------------------------------------------------------------
-# Node exporter textfile access health
-# -----------------------------------------------------------------------------
-nodeexp_ok=0
-[[ -d "$NODEEXP_DIR" && -w "$NODEEXP_DIR" && -x "$NODEEXP_DIR" ]] && nodeexp_ok=1
-
-tmp="$(mktemp)"
-cat >"$tmp" <<EOF
-# HELP fsbackup_node_exporter_textfile_access Can fsbackup write node_exporter textfile dir (1=yes,0=no)
-# TYPE fsbackup_node_exporter_textfile_access gauge
-fsbackup_node_exporter_textfile_access ${nodeexp_ok}
-EOF
-chgrp nodeexp_txt "$tmp"
-chmod 0644 "$tmp"
-mv "$tmp" "$NODEEXP_METRIC" 2>/dev/null || rm -f "$tmp"
-
-# -----------------------------------------------------------------------------
-# ORPHAN SNAPSHOT DETECTION (primary + mirror + annual)
+# ORPHAN DETECTION
 # -----------------------------------------------------------------------------
 mkdir -p "$(dirname "$ORPHAN_LOG")"
 
@@ -147,7 +121,7 @@ mapfile -t VALID_IDS < <(
 declare -A VALID
 for id in "${VALID_IDS[@]}"; do VALID["$id"]=1; done
 
-declare -A ORPHANS=( ["primary"]=0 ["mirror"]=0 )
+declare -A ORPHANS=(["primary"]=0 ["mirror"]=0)
 
 scan_root() {
   local root="$1"
@@ -173,14 +147,50 @@ scan_root "$MIRROR_SNAPSHOT_ROOT" "mirror"
 
 tmp="$(mktemp)"
 cat >"$tmp" <<EOF
-# HELP fsbackup_orphan_snapshots_total Number of orphaned snapshots by root
-# TYPE fsbackup_orphan_snapshots_total gauge
 fsbackup_orphan_snapshots_total{root="primary"} ${ORPHANS[primary]}
 fsbackup_orphan_snapshots_total{root="mirror"} ${ORPHANS[mirror]}
 EOF
 chgrp nodeexp_txt "$tmp"
 chmod 0644 "$tmp"
-mv "$tmp" "$ORPHAN_METRIC" 2>/dev/null || rm -f "$tmp"
+mv "$tmp" "$ORPHAN_METRIC"
+
+# -----------------------------------------------------------------------------
+# 🔒 ANNUAL IMMUTABILITY VERIFICATION
+# -----------------------------------------------------------------------------
+mkdir -p "$(dirname "$IMMUTABLE_LOG")"
+
+PRIMARY_IMMUTABLE=1
+MIRROR_IMMUTABLE=1
+
+check_annual() {
+  local root="$1"
+  local label="$2"
+
+  local annual_root="${root}/annual"
+  [[ -d "$annual_root" ]] || return 0
+
+  find "$annual_root" -type d | while read -r d; do
+    if [[ -w "$d" ]]; then
+      echo "$(date -Is) root=${label} writable=${d}" >>"$IMMUTABLE_LOG"
+      [[ "$label" == "primary" ]] && PRIMARY_IMMUTABLE=0
+      [[ "$label" == "mirror" ]] && MIRROR_IMMUTABLE=0
+    fi
+  done
+}
+
+check_annual "$PRIMARY_SNAPSHOT_ROOT" "primary"
+check_annual "$MIRROR_SNAPSHOT_ROOT" "mirror"
+
+tmp="$(mktemp)"
+cat >"$tmp" <<EOF
+# HELP fsbackup_annual_immutable Whether annual snapshots are immutable (1=yes,0=no)
+# TYPE fsbackup_annual_immutable gauge
+fsbackup_annual_immutable{root="primary"} ${PRIMARY_IMMUTABLE}
+fsbackup_annual_immutable{root="mirror"} ${MIRROR_IMMUTABLE}
+EOF
+chgrp nodeexp_txt "$tmp"
+chmod 0644 "$tmp"
+mv "$tmp" "$IMMUTABLE_METRIC"
 
 exit 0
 
