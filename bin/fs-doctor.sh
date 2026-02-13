@@ -36,6 +36,8 @@ done
 
 [[ -n "$CLASS" ]] || usage
 
+START_TS=$(date +%s.%N)
+
 for cmd in yq jq ssh; do
   command -v "$cmd" >/dev/null || { echo "$cmd not found"; exit 2; }
 done
@@ -191,6 +193,19 @@ EOF
 chgrp nodeexp_txt "$tmp"
 chmod 0644 "$tmp"
 mv "$tmp" "$IMMUTABLE_METRIC"
+
+END_TS=$(date +%s.%N)
+DURATION=$(awk "BEGIN {print $END_TS - $START_TS}")
+
+tmp="$(mktemp)"
+cat >"$tmp" <<EOF
+# HELP fsbackup_doctor_duration_seconds Duration of fsbackup doctor run
+# TYPE fsbackup_doctor_duration_seconds gauge
+fsbackup_doctor_duration_seconds{class="$CLASS"} ${DURATION}
+EOF
+chgrp nodeexp_txt "$tmp"
+chmod 0644 "$tmp"
+mv "$tmp" "${NODEEXP_DIR}/fsbackup_doctor_duration.prom"
 
 exit 0
 
