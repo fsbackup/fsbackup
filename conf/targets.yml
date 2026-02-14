@@ -24,10 +24,6 @@ class1:
       --exclude=_data/ssh_host_keys/ssh_host_ed25519_key
       --exclude=_data/ssh_host_keys/ssh_host_rsa_key"
 
-  - id: paperlessngx.consume
-    host: fs
-    source: /consume
-
   - id: apache.git.repos
     host: fs
     source: /var/www/src
@@ -105,6 +101,10 @@ class1:
   - id: owntracks.data
     host: denhpsvr2
     source: /docker/volumes/owntracks_data
+
+  - id: dymo-qr.data
+    host: denhpsvr2
+    source: /docker/volumes/dymo-qr_data
 
   # =============
   # hs
@@ -207,7 +207,7 @@ class2:
     type: dir
     rsync_opts:
       "--no-owner --no-group --no-perms --omit-dir-times --exclude=webmin.log
-      --exclude=miniserv.log --exclude=modules/authentic-theme/"
+      --exclude=miniserv.log --exclude=modules/authentic-theme/ --exclude=blocked"
 
   # =================
   # ns2
