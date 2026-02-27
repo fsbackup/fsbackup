@@ -6,7 +6,7 @@ UMask=0022
 Type=oneshot
 User=fsbackup
 Group=fsbackup
-ExecStart=/usr/local/sbin/fs-doctor.sh --class %i
+ExecStart=/opt/fsbackup/bin/fs-doctor.sh --class %i
 StandardOutput=journal
 StandardError=journal
 

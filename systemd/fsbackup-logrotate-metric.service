@@ -5,4 +5,4 @@ Description=fsbackup logrotate health metric
 UMask=0022
 Type=oneshot
 User=root
-ExecStart=/usr/local/sbin/fs-logrotate-metric.sh
+ExecStart=/opt/fsbackup/bin/fs-logrotate-metric.sh

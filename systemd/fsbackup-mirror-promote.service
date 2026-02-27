@@ -7,5 +7,5 @@ UMask=0022
 Type=oneshot
 User=fsbackup
 Group=fsbackup
-ExecStart=/home/crash/fsbackup/bin/fs-mirror.sh promote
+ExecStart=/opt/fsbackup/bin/fs-mirror.sh promote
 

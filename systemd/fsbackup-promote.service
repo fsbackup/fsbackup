@@ -6,5 +6,5 @@ UMask=0022
 Type=oneshot
 User=fsbackup
 Group=fsbackup
-ExecStart=/usr/local/sbin/fs-promote.sh
+ExecStart=/opt/fsbackup/bin/fs-promote.sh
 

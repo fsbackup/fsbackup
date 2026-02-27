@@ -8,5 +8,5 @@ UMask=0022
 Type=oneshot
 User=fsbackup
 Group=fsbackup
-ExecStart=/usr/local/sbin/fs-annual-promote.sh
+ExecStart=/opt/fsbackup/bin/fs-annual-promote.sh
 
