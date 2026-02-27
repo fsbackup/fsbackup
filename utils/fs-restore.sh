@@ -82,6 +82,7 @@ case "$CMD" in
 
   restore)
     [[ -n "$CLASS" && -n "$ID" ]] || { echo "restore requires --class and --id" >&2; exit 2; }
+    [[ -n "$DATE" || "$LATEST" -eq 1 ]] || { echo "restore requires --date or --latest" >&2; exit 2; }
     KEY="$(resolve_key)"
 
     SRC="${SNAPSHOT_ROOT}/${TYPE}/${KEY}/${CLASS}/${ID}"
