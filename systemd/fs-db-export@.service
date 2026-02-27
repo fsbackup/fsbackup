@@ -1,0 +1,12 @@
+[Unit]
+Description=PaperlessNGX Database export (%i)
+Requires=docker.service
+After=docker.service
+
+[Service]
+UMask=0022
+Type=oneshot
+ExecStart=/usr/local/sbin/fs-db-export.sh /etc/fsbackup/db/%i.env
+User=root
+Group=root
+

@@ -1,0 +1,14 @@
+# DB credentials — never commit these
+*.env
+
+# SSH private keys
+id_ed25519*
+id_rsa*
+*.pem
+*.key
+!*.pub
+
+# Editor and OS noise
+.DS_Store
+*.swp
+*~

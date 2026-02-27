@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily fsbackup snapshot (%i)
+
+[Timer]
+OnCalendar=02:15
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+

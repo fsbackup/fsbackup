@@ -1,0 +1,13 @@
+[Unit]
+Description=fsbackup runner (%i)
+After=network-online.target fsbackup-doctor@%i.service
+Requires=fsbackup-doctor@%i.service
+Wants=network-online.target
+
+[Service]
+UMask=0022
+Type=oneshot
+User=fsbackup
+Group=fsbackup
+ExecStart=/usr/local/sbin/fs-runner.sh daily --class %i
+

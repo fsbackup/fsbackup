@@ -1,0 +1,12 @@
+[Unit]
+Description=fsbackup mirror (daily pass) to SNAPSHOT_MIRROR_ROOT
+After=fsbackup-runner@class1.service fsbackup-runner@class2.service
+Before=fsbackup-retention.service
+
+[Service]
+UMask=0022
+Type=oneshot
+User=fsbackup
+Group=fsbackup
+ExecStart=/home/crash/fsbackup/bin/fs-mirror.sh daily
+

@@ -1,0 +1,10 @@
+[Unit]
+Description=fsbackup promotion check
+
+[Timer]
+OnCalendar=03:30
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+

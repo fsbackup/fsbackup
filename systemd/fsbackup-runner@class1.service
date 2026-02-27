@@ -1,0 +1,15 @@
+[Unit]
+Description=fsbackup daily snapshot runner (class1)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+UMask=0022
+Type=oneshot
+User=fsbackup
+Group=fsbackup
+ExecStart=/usr/local/sbin/fs-runner.sh daily --class class1
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+

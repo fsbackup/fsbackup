@@ -1,0 +1,10 @@
+[Unit]
+Description=fsbackup retention and pruning
+
+[Service]
+UMask=0022
+Type=oneshot
+User=fsbackup
+Group=fsbackup
+ExecStart=/usr/local/sbin/fs-retention.sh
+

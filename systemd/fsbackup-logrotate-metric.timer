@@ -1,0 +1,10 @@
+[Unit]
+Description=fsbackup logrotate metric timer
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+

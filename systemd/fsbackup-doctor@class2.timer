@@ -1,0 +1,10 @@
+[Unit]
+Description=fsbackup doctor check (%i)
+
+[Timer]
+OnCalendar=02:05
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+

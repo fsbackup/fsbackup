@@ -1,0 +1,10 @@
+[Unit]
+Description=Run fsbackup mirror (post-promote pass)
+
+[Timer]
+OnCalendar=*-*-* 03:40:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+

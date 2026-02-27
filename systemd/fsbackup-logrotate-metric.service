@@ -1,0 +1,8 @@
+[Unit]
+Description=fsbackup logrotate health metric
+
+[Service]
+UMask=0022
+Type=oneshot
+User=root
+ExecStart=/usr/local/sbin/fs-logrotate-metric.sh
