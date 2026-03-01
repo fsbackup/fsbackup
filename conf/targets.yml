@@ -9,11 +9,11 @@ class1:
 
   - id: technicom.files
     host: fs
-    source: /shr/technicom
+    source: /share/technicom
 
   - id: shared.files
     host: fs
-    source: /shr/shared
+    source: /share/shared
 
   - id: paperlessngx.data
     host: fs
@@ -165,7 +165,7 @@ class2:
 
   - id: homeassistant.backups
     host: fs
-    source: /shr/backups/homeassistant
+    source: /backup/exports/homeassistant
 
   - id: docker.stacks.fs
     host: fs
