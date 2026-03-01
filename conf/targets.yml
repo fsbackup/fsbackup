@@ -284,24 +284,29 @@ class2:
     rsync_opts: "--no-owner --no-group --no-perms --omit-dir-times"
 
 class3:
-  - id: system.hostname
-    host: all
-    source: /etc/hostname
+  # =============================================================
+  # class3: large archive targets — monthly snapshots only
+  # no mirror to /backup2 (see MIRROR_SKIP_CLASSES in fsbackup.conf)
+  # offsite: M-DISC annually, USB external monthly (manual)
+  # =============================================================
 
-  - id: system.hosts
-    host: all
-    source: /etc/hosts
+  # =============
+  # pictures (/share/pictures — fs local)
+  # =============
 
-  - id: system.netplan.fs
+  - id: pictures.digital_cameras
     host: fs
-    source: /etc/netplan
+    source: /share/pictures/digital_cameras
     type: dir
 
-  - id: system.netplan.denhpsvr1
-    host: denhpsvr1
-    source: /etc/netplan
+  - id: pictures.digital_cameras_raw
+    host: fs
+    source: /share/pictures/digital_cameras_raw
+    type: dir
 
-  - id: system.netplan.denhpsvr2
-    host: denhpsvr2
-    source: /etc/netplan
+  - id: pictures.mobile_photos
+    host: fs
+    source: /share/pictures/mobile_photos
+    type: dir
+
 
