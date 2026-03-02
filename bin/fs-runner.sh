@@ -79,7 +79,12 @@ fi
   exit 2
 }
 
-DATE_STR="$(date +%F)"
+case "$SNAPSHOT_TYPE" in
+  daily)   DATE_STR="$(date +%F)" ;;
+  weekly)  DATE_STR="$(date +%G-W%V)" ;;
+  monthly) DATE_STR="$(date +%Y-%m)" ;;
+  *)       DATE_STR="$(date +%F)" ;;
+esac
 DEST_BASE="${SNAPSHOT_ROOT}/${SNAPSHOT_TYPE}/${DATE_STR}/${CLASS}"
 
 echo "$(date -Is) fs-runner starting"

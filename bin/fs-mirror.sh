@@ -53,6 +53,7 @@ RSYNC_BASE=(rsync -a --ignore-existing)
 mirror_dir() {
   local src="$1"
   local dst="$2"
+  shift 2
 
   [[ -d "$src" ]] || {
     log "INFO source missing, skipping: $src"
@@ -62,7 +63,7 @@ mirror_dir() {
   mkdir -p "$dst"
 
   log "START rsync: $src -> $dst"
-  "${RSYNC_BASE[@]}" "${src%/}/" "${dst%/}/"
+  "${RSYNC_BASE[@]}" "$@" "${src%/}/" "${dst%/}/"
 }
 
 START_TS="$(date +%s)"
@@ -105,11 +106,16 @@ case "$MODE" in
     done
     ;;
   promote)
+    EXCLUDE_ARGS=()
+    for cls in $MIRROR_SKIP_CLASSES; do
+      EXCLUDE_ARGS+=("--exclude=*/${cls}")
+    done
+
     for tier in weekly monthly; do
       SRC="${SRC_ROOT}/${tier}"
       DST="${DST_ROOT}/${tier}"
 
-      if mirror_dir "$SRC" "$DST"; then
+      if mirror_dir "$SRC" "$DST" "${EXCLUDE_ARGS[@]}"; then
         [[ -d "$DST" ]] && BYTES_TOTAL=$((BYTES_TOTAL + $(du -sb "$DST" | awk '{print $1}')))
         log "OK rsync: $SRC -> $DST"
       else
