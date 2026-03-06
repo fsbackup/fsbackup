@@ -34,6 +34,7 @@ BACKUP_SHELL="/bin/bash"
 
 PUBKEY_FILE=""
 PUBKEY_TEXT="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEJwT7RbHgoeGRTQfF/bbdtJJ6+WBfteTH5jYTzZUUcc"
+PUBKEY_EXPLICIT=0
 
 ALLOW_PATHS=()
 
@@ -70,7 +71,7 @@ while [[ $# -gt 0 ]]; do
     --backup-user) BACKUP_USER="$2"; shift 2;;
     --backup-home) BACKUP_HOME="$2"; shift 2;;
     --pubkey-file) PUBKEY_FILE="$2"; shift 2;;
-    --pubkey) PUBKEY_TEXT="$2"; shift 2;;
+    --pubkey) PUBKEY_TEXT="$2"; PUBKEY_EXPLICIT=1; shift 2;;
     --allow-path) ALLOW_PATHS+=("$2"); shift 2;;
     --skip-textfile) SKIP_TEXTFILE=1; shift;;
     -h|--help) usage; exit 0;;
@@ -78,14 +79,14 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$PUBKEY_FILE" && -z "$PUBKEY_TEXT" ]]; then
-  echo "ERROR: missing --pubkey-file or --pubkey" >&2
-  exit 2
-fi
-
 if [[ -n "$PUBKEY_FILE" ]]; then
   [[ -f "$PUBKEY_FILE" ]] || { echo "ERROR: pubkey file not found: $PUBKEY_FILE" >&2; exit 2; }
   PUBKEY_TEXT="$(cat "$PUBKEY_FILE")"
+  PUBKEY_EXPLICIT=1
+fi
+
+if [[ "$PUBKEY_EXPLICIT" -eq 0 ]]; then
+  echo "WARN: no --pubkey-file or --pubkey provided — using hardcoded default key" >&2
 fi
 
 command -v setfacl >/dev/null || { echo "ERROR: setfacl not installed"; exit 2; }
@@ -234,7 +235,9 @@ write_remote_metric() {
 
   mkdir -p "$TEXTFILE_DIR" 2>/dev/null || true
 
-  cat >"$prom" <<EOF
+  local tmp
+  tmp="$(mktemp)"
+  cat >"$tmp" <<EOF
 # HELP fsbackup_remote_init_last_run_seconds Unix timestamp of last remote init run
 # TYPE fsbackup_remote_init_last_run_seconds gauge
 fsbackup_remote_init_last_run_seconds ${ts}
@@ -244,12 +247,11 @@ fsbackup_remote_init_last_run_seconds ${ts}
 fsbackup_remote_init_status 0
 EOF
 
-  # Keep perms consistent if dir exists
   if [[ -d "$TEXTFILE_DIR" ]]; then
-    # Use current directory group and setgid behavior
-    chgrp "$(stat -c %G "$TEXTFILE_DIR")" "$prom" 2>/dev/null || true
-    chmod 0664 "$prom" 2>/dev/null || true
+    chgrp "$(stat -c %G "$TEXTFILE_DIR")" "$tmp" 2>/dev/null || true
+    chmod 0664 "$tmp" 2>/dev/null || true
   fi
+  mv "$tmp" "$prom"
 }
 
 # --------------------------- MAIN ---------------------------------------------
