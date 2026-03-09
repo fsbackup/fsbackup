@@ -81,7 +81,7 @@ class3 is excluded from mirroring (`MIRROR_SKIP_CLASSES`). Only class1 gets annu
 | `fs-nodeexp-fix.sh` | `utils/` | manual only |
 | `fs-annual-mirror-check.sh` | `utils/` | manual only |
 | `fs-target-rename.sh` | `utils/` | manual only |
-| `fs-export-s3.sh` | `s3/` | systemd timer at 04:30 (deployed, not yet enabled) |
+| `fs-export-s3.sh` | `s3/` | systemd timer at 04:30 (enabled, running nightly) |
 | `fsbackup_remote_init.sh` | `remote/` | run ON remote host to set up backup user |
 | `fs-prometheus-prebackup.sh` | `remote/` | run ON denhpsvr1 |
 | `fs-victoriametrics-prebackup.sh` | `remote/` | run ON denhpsvr1 |
@@ -122,13 +122,12 @@ Units use template instantiation (`@class1`, `@class2`, `@class3`) for runner an
 - AWS credentials: profile `fsbackup` in `/var/lib/fsbackup/.aws/`
 - Tiers uploaded: weekly + monthly + annual only (no daily, no class3)
 - Idempotent: `head-object` check before each upload; safe to re-run
-- Script: `s3/fs-export-s3.sh` — timer: `fsbackup-s3-export.timer` at 04:30 daily (deployed, not yet enabled)
-- Enable with: `sudo systemctl enable --now fsbackup-s3-export.timer`
+- Script: `s3/fs-export-s3.sh` — timer: `fsbackup-s3-export.timer` at 04:30 daily (enabled, running nightly)
 
 **S3 key:** `<tier>/<class>/<target>/<target>--<date>.tar.zst.age`
 (tier is top-level prefix so lifecycle `Prefix:` rules work)
 
-**Lifecycle rules:** `weekly/` → 90d, `monthly/` → 548d, `annual/` → no expiry
+**Lifecycle rules:** `weekly/` → 84d, `monthly/` → 450d, `annual/` → no expiry
 
 **Restore:**
 ```bash

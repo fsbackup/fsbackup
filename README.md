@@ -194,13 +194,13 @@ aws s3api put-bucket-lifecycle-configuration \
         "ID": "expire-weekly",
         "Status": "Enabled",
         "Filter": {"Prefix": "weekly/"},
-        "Expiration": {"Days": 90}
+        "Expiration": {"Days": 84}
       },
       {
         "ID": "expire-monthly",
         "Status": "Enabled",
         "Filter": {"Prefix": "monthly/"},
-        "Expiration": {"Days": 548}
+        "Expiration": {"Days": 450}
       },
       {
         "ID": "abort-incomplete-multipart",
