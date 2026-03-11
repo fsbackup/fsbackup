@@ -361,6 +361,65 @@ async def restore_page(request: Request, snapshot_path: str = "", dest: str = ""
     })
 
 
+@app.post("/api/run/restore", response_class=HTMLResponse)
+async def api_restore(
+    request: Request,
+    snapshot_path: str = Form(default=""),
+    dest: str = Form(default=""),
+    dry_run: str = Form(default=""),
+):
+    """
+    Run rsync to restore a snapshot directory to a destination path.
+    snapshot_path: full path to snapshot directory (within SNAPSHOT_ROOT or MIRROR_ROOT)
+    dest: local destination path
+    dry_run: "1" if dry run (preview only)
+    """
+    is_dry = dry_run == "1"
+    error = ""
+    output = ""
+
+    if not snapshot_path:
+        error = "Snapshot path is required."
+    elif not dest:
+        error = "Destination path is required."
+    else:
+        snap = Path(snapshot_path)
+        # Safety: must be within a known snapshot root
+        allowed_roots = [SNAPSHOT_ROOT]
+        if MIRROR_ROOT:
+            allowed_roots.append(MIRROR_ROOT)
+        try:
+            resolved = snap.resolve()
+            if not any(str(resolved).startswith(str(r)) for r in allowed_roots):
+                error = f"Snapshot path must be within {SNAPSHOT_ROOT} or {MIRROR_ROOT}"
+            elif not resolved.is_dir():
+                error = f"Snapshot directory not found: {snapshot_path}"
+        except Exception as e:
+            error = str(e)
+
+    if not error:
+        cmd = ["rsync", "-a", "--stats"]
+        if is_dry:
+            cmd.append("--dry-run")
+        cmd += [str(resolved) + "/", dest + "/"]
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            output = r.stdout + r.stderr
+            if r.returncode != 0 and not output.strip():
+                output = f"rsync exited with code {r.returncode}"
+        except subprocess.TimeoutExpired:
+            error = "rsync timed out (>120s). For large restores use the command line."
+        except Exception as e:
+            error = str(e)
+
+    return templates.TemplateResponse("partials/restore_result.html", {
+        "request":  request,
+        "error":    error,
+        "output":   output,
+        "is_dry":   is_dry,
+    })
+
+
 @app.get("/run", response_class=HTMLResponse)
 async def run_page(request: Request):
     units = {}

@@ -46,7 +46,8 @@
         <form hx-post="/api/run/runner"
               hx-target="#runner-result-{{ cls }}"
               hx-swap="innerHTML"
-              hx-on:htmx:before-request="this.querySelector('button').disabled=true; this.querySelector('button').textContent='Starting…'">
+              hx-on:htmx:before-request="this.querySelector('button').disabled=true; this.querySelector('button').textContent='Starting…'"
+              hx-on:htmx:after-request="this.querySelector('button').disabled=false; this.querySelector('button').textContent='Start'">
           <input type="hidden" name="cls" value="{{ cls }}">
           <button type="submit"
                   class="bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-white text-xs font-medium px-3 py-1.5 rounded-lg transition-colors">
@@ -75,7 +76,8 @@
         <form hx-post="/api/run/doctor"
               hx-target="#doctor-result-{{ cls }}"
               hx-swap="innerHTML"
-              hx-on:htmx:before-request="this.querySelector('button').disabled=true; this.querySelector('button').textContent='Starting…'">
+              hx-on:htmx:before-request="this.querySelector('button').disabled=true; this.querySelector('button').textContent='Starting…'"
+              hx-on:htmx:after-request="this.querySelector('button').disabled=false; this.querySelector('button').textContent='Start'">
           <input type="hidden" name="cls" value="{{ cls }}">
           <button type="submit"
                   class="bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-white text-xs font-medium px-3 py-1.5 rounded-lg transition-colors">
@@ -117,7 +119,8 @@
         <form hx-post="/api/run/{{ action }}"
               hx-target="#result-{{ action }}"
               hx-swap="innerHTML"
-              hx-on:htmx:before-request="this.querySelector('button').disabled=true; this.querySelector('button').textContent='Starting…'">
+              hx-on:htmx:before-request="this.querySelector('button').disabled=true; this.querySelector('button').textContent='Starting…'"
+              hx-on:htmx:after-request="this.querySelector('button').disabled=false; this.querySelector('button').textContent='Start'">
           <button type="submit"
                   class="bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-white text-xs font-medium px-3 py-1.5 rounded-lg transition-colors">
             Start

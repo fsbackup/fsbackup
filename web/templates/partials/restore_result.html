@@ -1,0 +1,10 @@
+{% if error %}
+<div class="rounded-lg bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-400 text-xs font-mono p-3 whitespace-pre-wrap">{{ error }}</div>
+{% elif output %}
+<div class="rounded-lg {% if is_dry %}bg-amber-50 dark:bg-zinc-800 border border-amber-200 dark:border-amber-700{% else %}bg-emerald-50 dark:bg-zinc-800 border border-emerald-200 dark:border-emerald-700{% endif %} p-3">
+  <p class="text-xs font-medium {% if is_dry %}text-amber-700 dark:text-amber-400{% else %}text-emerald-700 dark:text-emerald-400{% endif %} mb-2">
+    {% if is_dry %}Dry run complete — no files were changed.{% else %}Restore complete.{% endif %}
+  </p>
+  <pre class="text-xs font-mono text-zinc-600 dark:text-zinc-300 whitespace-pre-wrap overflow-x-auto max-h-72 overflow-y-auto">{{ output }}</pre>
+</div>
+{% endif %}

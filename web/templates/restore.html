@@ -12,7 +12,9 @@
   <!-- Restore form -->
   <div class="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl p-6 shadow-sm">
     <h2 class="text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-4">Restore snapshot</h2>
-    <form hx-post="/api/run/restore" hx-target="#restore-result" hx-swap="innerHTML" class="space-y-4">
+    <form hx-post="/api/run/restore" hx-target="#restore-result" hx-swap="innerHTML" class="space-y-4"
+          hx-on:htmx:before-request="this.querySelector('button[type=submit]').disabled=true; this.querySelector('button[type=submit]').textContent='Restoring…'; document.getElementById('restore-result').innerHTML='<div class=\'text-zinc-400 text-xs font-mono p-3 animate-pulse\'>Running rsync…</div>'"
+          hx-on:htmx:after-request="this.querySelector('button[type=submit]').disabled=false; this.querySelector('button[type=submit]').textContent='Restore'">
       <div>
         <label class="block text-xs text-zinc-500 mb-1">Snapshot path</label>
         <input type="text" name="snapshot_path" value="{{ snapshot_path }}"
