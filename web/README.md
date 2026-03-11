@@ -159,6 +159,50 @@ The `--reload` flag restarts on file changes — remove it in production.
 
 ---
 
+## Permissions
+
+The web app reads snapshot directories and Prometheus `.prom` files. The user
+running the app needs read+execute access to these paths.
+
+**Production (systemd, `User=fsbackup`):** No extra steps — `fsbackup` already
+owns all relevant paths.
+
+**Development (running as another user, e.g. `crash`):** Grant ACLs explicitly.
+Do not add the dev user to `fsbackup` or `nodeexp_txt` groups as that gives
+broader access than needed.
+
+```bash
+# Snapshot trees
+sudo setfacl -m u:crash:rX /backup
+sudo setfacl -Rm u:crash:rX /backup/snapshots
+sudo setfacl -m d:u:crash:rX /backup/snapshots
+
+sudo setfacl -m u:crash:rX /backup2
+sudo setfacl -Rm u:crash:rX /backup2/snapshots
+sudo setfacl -m d:u:crash:rX /backup2/snapshots
+
+# Prometheus textfile collector
+sudo setfacl -m u:crash:rx /var/lib/node_exporter/textfile_collector/
+sudo setfacl -Rm u:crash:r /var/lib/node_exporter/textfile_collector/
+sudo setfacl -m d:u:crash:r /var/lib/node_exporter/textfile_collector/
+
+# AWS credentials (for S3 page)
+sudo setfacl -m u:crash:x /var/lib/fsbackup
+sudo setfacl -m u:crash:rx /var/lib/fsbackup/.aws
+sudo setfacl -m u:crash:r /var/lib/fsbackup/.aws/credentials /var/lib/fsbackup/.aws/config
+```
+
+The app hardcodes `AWS_SHARED_CREDENTIALS_FILE` and `AWS_CONFIG_FILE` to point at
+`/var/lib/fsbackup/.aws/` at startup (via `os.environ.setdefault`), so boto3 finds
+the `fsbackup` profile regardless of which user runs the process. These env vars can
+be overridden in `.env` if your setup differs.
+
+> The `-Rm` on snapshot trees is recursive and can be slow on large trees. The
+> default ACL (`-m d:`) ensures new snapshots created after the fact are also
+> readable without re-running the command.
+
+---
+
 ## Deploying as a systemd service
 
 Create `/etc/systemd/system/fsbackup-web.service`:

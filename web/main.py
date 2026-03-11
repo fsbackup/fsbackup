@@ -44,6 +44,13 @@ S3_PROFILE = os.environ.get("S3_PROFILE", "fsbackup")
 S3_REGION  = os.environ.get("S3_REGION",  "us-west-2")
 PRESIGN_TTL = 3600  # seconds
 
+# Point boto3 at the fsbackup user's credential store if not already set.
+# This allows the app to run as any user (e.g. crash during dev) as long as
+# that user has read ACL on the files.
+_aws_creds_dir = "/var/lib/fsbackup/.aws"
+os.environ.setdefault("AWS_SHARED_CREDENTIALS_FILE", f"{_aws_creds_dir}/credentials")
+os.environ.setdefault("AWS_CONFIG_FILE",              f"{_aws_creds_dir}/config")
+
 
 def s3_client():
     session = boto3.Session(profile_name=S3_PROFILE)
@@ -206,10 +213,11 @@ async def snapshots_page(
     cls: str = "",
     target: str = "",
     snap_date: str = "",
+    no_date: str = "",
 ):
-    # Default date to today for daily tier; blank for other tiers
+    # Default date to today for daily tier, unless user explicitly cleared it
     today_str = date.today().strftime("%Y-%m-%d")
-    if not snap_date and tier == "daily":
+    if not snap_date and tier == "daily" and not no_date:
         snap_date = today_str
 
     snaps = list_snapshots(
@@ -329,6 +337,25 @@ async def run_page(request: Request):
         "request":        request,
         "units":          units,
         "classes":        CLASSES,
+        "promote_status": promote_status,
+        "mirror_status":  mirror_status,
+    })
+
+
+@app.get("/api/run/status", response_class=HTMLResponse)
+async def api_run_status(request: Request):
+    """Return live status badges for all run-page units (HTMX polling target)."""
+    units = {}
+    for cls in CLASSES:
+        units[cls] = {
+            "runner": systemd_service_status(f"fsbackup-runner@{cls}.service"),
+            "doctor": systemd_service_status(f"fsbackup-doctor@{cls}.service"),
+        }
+    promote_status = systemd_service_status("fsbackup-promote.service")
+    mirror_status  = systemd_service_status("fsbackup-mirror-daily.service")
+    return templates.TemplateResponse("partials/run_status.html", {
+        "request":        request,
+        "units":          units,
         "promote_status": promote_status,
         "mirror_status":  mirror_status,
     })

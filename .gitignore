@@ -19,3 +19,4 @@ conf/fsbackup.conf
 web/__pycache__/
 **/__pycache__/
 *.pyc
+web/.venv/

@@ -7,6 +7,27 @@
   <p class="text-zinc-500 text-sm mt-1">Trigger systemd services manually</p>
 </div>
 
+<!-- Live status poller — updates all status badges every 3s via hx-swap-oob -->
+<div hx-get="/api/run/status"
+     hx-trigger="every 3s"
+     hx-swap="none"
+     style="display:none"></div>
+
+{% macro badge(id, val) %}
+  <span id="{{ id }}" class="inline-flex items-center gap-1 text-xs font-medium
+    {% if val == 'active' %}text-emerald-600 dark:text-emerald-400
+    {% elif val == 'failed' %}text-red-500 dark:text-red-400
+    {% elif val == 'activating' %}text-amber-500 dark:text-amber-400
+    {% else %}text-zinc-400{% endif %}">
+    <span class="w-1.5 h-1.5 rounded-full
+      {% if val == 'active' %}bg-emerald-500
+      {% elif val == 'failed' %}bg-red-500
+      {% elif val == 'activating' %}bg-amber-400 animate-pulse
+      {% else %}bg-zinc-400{% endif %}"></span>
+    {{ val }}
+  </span>
+{% endmacro %}
+
 <!-- Per-class runner / doctor -->
 <h2 class="text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-3">Classes</h2>
 <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
@@ -21,9 +42,7 @@
         <p class="text-xs text-zinc-400 font-mono">fsbackup-runner@{{ cls }}</p>
       </div>
       <div class="flex items-center gap-2">
-        <span class="text-xs {% if statuses.runner == 'active' %}text-emerald-600 dark:text-emerald-400{% elif statuses.runner == 'failed' %}text-red-600 dark:text-red-400{% else %}text-zinc-400{% endif %}">
-          {{ statuses.runner }}
-        </span>
+        {{ badge("status-runner-" ~ cls, statuses.runner) }}
         <form hx-post="/api/run/runner"
               hx-target="#runner-result-{{ cls }}"
               hx-swap="innerHTML">
@@ -44,9 +63,7 @@
         <p class="text-xs text-zinc-400 font-mono">fsbackup-doctor@{{ cls }}</p>
       </div>
       <div class="flex items-center gap-2">
-        <span class="text-xs {% if statuses.doctor == 'active' %}text-emerald-600 dark:text-emerald-400{% elif statuses.doctor == 'failed' %}text-red-600 dark:text-red-400{% else %}text-zinc-400{% endif %}">
-          {{ statuses.doctor }}
-        </span>
+        {{ badge("status-doctor-" ~ cls, statuses.doctor) }}
         <form hx-post="/api/run/doctor"
               hx-target="#doctor-result-{{ cls }}"
               hx-swap="innerHTML">
@@ -79,9 +96,7 @@
         <p class="text-xs text-zinc-300 dark:text-zinc-600 font-mono mt-0.5">fsbackup-{{ action }}.service</p>
       </div>
       <div class="flex items-center gap-3">
-        <span class="text-xs {% if status_val == 'active' %}text-emerald-600 dark:text-emerald-400{% elif status_val == 'failed' %}text-red-600 dark:text-red-400{% else %}text-zinc-400{% endif %}">
-          {{ status_val }}
-        </span>
+        {{ badge("status-" ~ action, status_val) }}
         <form hx-post="/api/run/{{ action }}"
               hx-target="#result-{{ action }}"
               hx-swap="innerHTML">

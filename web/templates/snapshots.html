@@ -13,7 +13,7 @@
         class="flex flex-wrap gap-3 items-end"
         hx-get="/api/snapshots"
         hx-target="#snapshot-rows"
-        hx-trigger="change from:select, change from:input, submit"
+        hx-trigger="change from:select, input from:input[name='snap_date'], submit"
         hx-include="this">
 
     <!-- Tier -->
@@ -68,7 +68,7 @@
 
     <!-- Clear -->
     <div class="ml-auto self-end">
-      <a href="/snapshots"
+      <a href="/snapshots?no_date=1"
          class="text-xs text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 px-3 py-1.5 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors">
         Reset
       </a>
