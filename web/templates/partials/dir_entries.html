@@ -1,0 +1,35 @@
+{% for entry in entries %}
+<tr class="hover:bg-zinc-50 dark:hover:bg-zinc-800/50 transition-colors">
+  <td class="px-4 py-2.5">
+    <div class="flex items-center gap-2">
+      {% if entry.is_dir %}
+        <svg class="w-4 h-4 text-brand-500 shrink-0" fill="currentColor" viewBox="0 0 20 20">
+          <path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z"/>
+        </svg>
+        <a href="/browse?path={{ entry.path | urlencode }}"
+           class="font-mono text-xs text-brand-600 dark:text-brand-400 hover:text-brand-700 dark:hover:text-brand-300">{{ entry.name }}/</a>
+      {% else %}
+        <svg class="w-4 h-4 text-zinc-400 dark:text-zinc-600 shrink-0" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+        </svg>
+        <span class="font-mono text-xs text-zinc-700 dark:text-zinc-300">{{ entry.name }}</span>
+      {% endif %}
+    </div>
+  </td>
+  <td class="px-4 py-2.5 text-xs text-zinc-400 font-mono">
+    {% if entry.size is not none %}
+      {% if entry.size >= 1073741824 %}{{ "%.1f"|format(entry.size / 1073741824) }} GB
+      {% elif entry.size >= 1048576 %}{{ "%.1f"|format(entry.size / 1048576) }} MB
+      {% elif entry.size >= 1024 %}{{ "%.1f"|format(entry.size / 1024) }} KB
+      {% else %}{{ entry.size }} B
+      {% endif %}
+    {% else %}—{% endif %}
+  </td>
+  <td class="px-4 py-2.5 text-xs text-zinc-400 font-mono">{{ entry.mtime }}</td>
+  <td class="px-4 py-2.5"></td>
+</tr>
+{% else %}
+<tr>
+  <td colspan="4" class="px-4 py-6 text-center text-zinc-400 text-sm">Directory is empty.</td>
+</tr>
+{% endfor %}
