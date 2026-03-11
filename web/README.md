@@ -5,6 +5,22 @@ FastAPI, HTMX, and Tailwind CSS. Runs as a systemd service on the backup server.
 
 ---
 
+## Screenshots
+
+<!-- Add screenshots to docs/screenshots/ and update the links below -->
+
+| Dashboard | Snapshots | Run Jobs |
+|-----------|-----------|----------|
+| ![Dashboard](../docs/screenshots/dashboard.png) | ![Snapshots](../docs/screenshots/snapshots.png) | ![Run Jobs](../docs/screenshots/run.png) |
+
+| S3 Offsite | Targets | Login |
+|------------|---------|-------|
+| ![S3](../docs/screenshots/s3.png) | ![Targets](../docs/screenshots/targets.png) | ![Login](../docs/screenshots/login.png) |
+
+> Screenshots pending — take them from a running instance and drop PNG files into `docs/screenshots/`.
+
+---
+
 ## Architecture
 
 ```
