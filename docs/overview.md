@@ -37,39 +37,44 @@ determines which targets run together and how often.
 ## Data flow
 
 ```mermaid
-flowchart LR
-    subgraph src ["Source hosts (any class)"]
-        R["Remote host\n(rsync over SSH)"]
-        L["Local path\n(rsync direct)"]
+%%{init: {'flowchart': {'nodeSpacing': 80, 'rankSpacing': 150}}}%%
+flowchart TD
+    subgraph src ["Sources"]
+        SRC["Source Host/Path"]
     end
 
-    subgraph primary ["/backup — primary"]
+    subgraph primary ["/backup — primary — 8TB"]
         PD["daily/"]
         PW["weekly/"]
         PM["monthly/"]
         PA["annual/"]
-        PD -->|"promote\n(hard-link)"| PW
-        PD -->|"promote\n(hard-link)"| PM
-        PM -->|"promote annual\n(Jan 5)"| PA
+        PD -->|"promote"| PW
+        PD -->|"promote"| PM
+        PM -->|"promote annual<br/>(Jan 5)"| PA
     end
 
-    subgraph mirror ["/backup2 — mirror"]
+    subgraph offsite ["Offsite"]
+        direction LR
+        S3["S3 bucket<br/>weekly + monthly + annual<br/>(age-encrypted)"]
+        COLD["M-DISC / USB<br/>annual + monthly<br/>(manual)"]
+    end
+
+    subgraph mirror ["/backup2 — mirror — 2TB"]
         MD["daily/"]
         MW["weekly/"]
         MM["monthly/"]
         MA["annual/"]
     end
 
-    subgraph offsite ["Offsite"]
-        S3["S3 bucket\nweekly + monthly + annual\n(age-encrypted)"]
-        COLD["M-DISC / USB\nannual + monthly\n(manual)"]
-    end
-
-    R -->|"fs-runner.sh"| PD
-    L -->|"fs-runner.sh"| PD
-    primary -->|"fs-mirror.sh"| mirror
-    primary -->|"fs-export-s3.sh"| S3
+    SRC --> PD
+    primary -->|"mirror"| mirror
+    primary -->|"offsite"| S3
     primary -.->|"manual"| COLD
+
+    style src fill:transparent,stroke:#aaa,stroke-width:1px
+    style primary fill:transparent,stroke:#aaa,stroke-width:1px
+    style mirror fill:transparent,stroke:#aaa,stroke-width:1px
+    style offsite fill:transparent,stroke:#aaa,stroke-width:1px
 ```
 
 ---
@@ -135,12 +140,56 @@ node_exporter scrape and exposed to Prometheus without any additional configurat
 | `fsbackup_runner_target_failures_total{class,target}` | Cumulative failure count since last success |
 | `fsbackup_runner_last_exit_code{class}` | 0 if all targets succeeded, 1 if any failed |
 
-**Doctor metrics**: SSH reachability and path health per target; orphan snapshot counts;
-annual snapshot immutability status.
+**Doctor metrics** (`fsbackup_doctor_<class>.prom`):
 
-**Mirror metrics**: last exit code and timestamp per mirror mode (daily, promote).
+| Metric | Description |
+|--------|-------------|
+| `fsbackup_doctor_ssh_ok{class,target,host}` | 1 if SSH connection to host succeeded |
+| `fsbackup_doctor_path_ok{class,target,host}` | 1 if source path exists on remote host |
+| `fsbackup_orphan_snapshots_total{root}` | Count of snapshot directories with no matching target |
+| `fsbackup_annual_immutable{root}` | 1 if all annual snapshots are read-only (immutable) |
+| `fsbackup_doctor_duration_seconds{class}` | Wall-clock seconds the doctor run took |
+| `fsbackup_node_exporter_textfile_access` | 1 if the textfile collector directory is writable |
 
-**DB export metrics**: export success, file size, and timestamp per database.
+**Mirror metrics** (`fsbackup_mirror_<mode>.prom`):
+
+| Metric | Description |
+|--------|-------------|
+| `fsbackup_mirror_last_success{mode}` | Unix timestamp of last successful mirror run |
+| `fsbackup_mirror_last_exit_code{mode}` | 0 if mirror succeeded, 1 if any rsync failed |
+| `fsbackup_mirror_bytes_total{mode}` | Bytes transferred in last mirror run |
+| `fsbackup_mirror_duration_seconds{mode}` | Wall-clock seconds the mirror run took |
+
+`mode` is `daily` or `promote`.
+
+**DB export metrics** (`fsbackup_db_export.prom`):
+
+| Metric | Description |
+|--------|-------------|
+| `fsbackup_db_export_success{db,engine,host}` | 1 if the last export succeeded, 0 if it failed |
+| `fsbackup_db_export_last_timestamp{db,engine,host}` | Unix timestamp of last successful export |
+| `fsbackup_db_export_size_bytes{db,engine,host}` | Compressed size of the export file in bytes |
+
+**Logrotate metric** (`fsbackup_logrotate.prom`):
+
+| Metric | Description |
+|--------|-------------|
+| `fsbackup_logrotate_ok` | 1 if logrotate ran cleanly on last check, 0 if it errored |
+| `fsbackup_logrotate_last_run_seconds` | Unix timestamp of last logrotate check |
+
+**S3 export metrics** (`fsbackup_s3_export.prom`):
+
+| Metric | Description |
+|--------|-------------|
+| `fsbackup_s3_target_last_upload{tier,class,target}` | Unix timestamp of last successful upload for this target |
+| `fsbackup_s3_target_last_failure{tier,class,target}` | Unix timestamp of last failed upload for this target |
+| `fsbackup_s3_last_success` | Unix timestamp of last run where all uploads succeeded |
+| `fsbackup_s3_last_exit_code` | 0 if all targets succeeded, 1 if any failed |
+| `fsbackup_s3_uploaded_total` | Count of archives uploaded in last run |
+| `fsbackup_s3_skipped_total` | Count of archives skipped (already present in S3) |
+| `fsbackup_s3_failed_total` | Count of archives that failed to upload |
+| `fsbackup_s3_bytes_total` | Total bytes uploaded in last run |
+| `fsbackup_s3_duration_seconds` | Wall-clock seconds the S3 export run took |
 
 A Grafana dashboard is included at `conf/grafana-dashboard.json`. The datasource UID
 in that file is instance-specific and must be remapped on import.
