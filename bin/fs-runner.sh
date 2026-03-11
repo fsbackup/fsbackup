@@ -128,6 +128,23 @@ FAILED=0
 
 PROM_TMP="$(mktemp)"
 
+# For partial runs, carry forward existing per-target metrics for targets not
+# being re-run so they are not wiped from the prom file.
+if [[ "$RUN_SCOPE_FULL" -eq 0 ]] && [[ -f "$PROM_FILE" ]]; then
+  while IFS= read -r line; do
+    [[ -z "$line" || "$line" == "#"* ]] && continue
+    # Skip class-level and counter metrics — handled separately below
+    [[ "$line" =~ ^fsbackup_runner_target_failures_total ]] && continue
+    [[ "$line" =~ ^fsbackup_runner_run_scope ]] && continue
+    [[ "$line" =~ ^fsbackup_runner_success ]] && continue
+    [[ "$line" =~ ^fsbackup_runner_failed ]] && continue
+    [[ "$line" =~ ^fsbackup_runner_last_exit_code\{ ]] && continue
+    # Skip metrics for the target being re-run (will be written fresh)
+    [[ "$line" == *"target=\"${TARGET_FILTER}\""* ]] && continue
+    echo "$line"
+  done < "$PROM_FILE" >> "$PROM_TMP"
+fi
+
 for t in "${TARGETS[@]}"; do
   ((TOTAL++))
 

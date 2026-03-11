@@ -57,7 +57,19 @@ class2:
     type: dir
 ```
 
-2. Verify the path exists and doctor passes:
+2. If any files under the source path are not world-readable (e.g. mode `600`/`700`),
+   grant the `fsbackup` user read access via ACL:
+
+```bash
+sudo setfacl -R -m u:fsbackup:rX /path/to/source
+sudo setfacl -R -m d:u:fsbackup:rX /path/to/source   # default ACL for new files
+```
+
+The `d:` default ACL ensures files created in the future are also readable without
+needing to re-run setfacl. If this is skipped, the runner will fail with rsync exit
+code 23 and `Permission denied` errors in the journal.
+
+3. Verify the path exists and doctor passes:
 
 ```bash
 sudo -u fsbackup /opt/fsbackup/bin/fs-doctor.sh --class class2

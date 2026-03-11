@@ -84,6 +84,10 @@ sudo -u fsbackup /opt/fsbackup/bin/fs-runner.sh daily --class class1
 sudo -u fsbackup /opt/fsbackup/bin/fs-runner.sh daily --class class1 --target mosquitto.data
 ```
 
+When `--target` is used, the Prometheus metrics file is updated only for that target.
+All other targets' metrics are carried forward from the previous run, so the dashboard
+stays intact. The class-level success/failure counters are not updated on partial runs.
+
 ### Replace an existing snapshot (re-sync over it)
 
 By default the runner uses `--ignore-existing` to avoid re-transferring unchanged data.
@@ -225,3 +229,94 @@ To re-run immediately for a specific target:
 ```bash
 sudo -u fsbackup /opt/fsbackup/bin/fs-runner.sh daily --class class1 --target <id>
 ```
+
+---
+
+## Troubleshooting
+
+### Exit code 255 in Prometheus metrics
+
+`fsbackup_runner_target_last_exit_code{target="..."} 255` means rsync received exit code
+255, which is a **SSH connection failure** — rsync never got started on the remote host.
+This is not a backup data error; it is a connectivity problem between the backup server
+and the source host.
+
+Common causes:
+
+- **Network unreachable** — the backup server cannot route to the target host. Check
+  routing with `ip route get <host-ip>`. If the result shows `broadcast ... cache <local,brd>`
+  that is a kernel FIB routing bug (see below).
+- **SSH host key mismatch** — the target host was rebuilt. Re-trust the key:
+  ```bash
+  sudo -u fsbackup ssh-keygen -R <hostname> -f /var/lib/fsbackup/.ssh/known_hosts
+  sudo /opt/fsbackup/utils/fs-trust-host.sh <hostname>
+  ```
+- **SSH auth failure** — the `backup` user on the remote host does not have the correct
+  authorized key. Re-run `fsbackup_remote_init.sh` on the remote host.
+- **Source host is down** — the host is unreachable for unrelated reasons. Doctor will
+  show `FAIL  ssh unreachable`.
+
+To distinguish the cause, run SSH manually as the fsbackup user:
+
+```bash
+sudo -u fsbackup ssh backup@<hostname> echo ok
+```
+
+---
+
+### Network unreachable (Linux FIB routing bug)
+
+On this host (`fs`, 172.30.3.130/28, DAT VLAN), a Linux 6.8 kernel bug intermittently
+classifies route lookups for cross-VLAN destinations as `RTN_BROADCAST`, causing TCP
+`connect()` to fail with `ENETUNREACH`. This manifests as rsync exit code 255 for any
+target on the CORE, APP, or DMZ VLANs.
+
+**This is not a backup system bug.** It is a host networking issue.
+
+Symptoms: scattered 255 failures across multiple targets in the same run, particularly
+targets on different VLANs (denhpsvr1 .10, denhpsvr2 .70, ns1 .53, ns2 .54).
+
+Diagnosis:
+
+```bash
+ip route get 172.30.3.10
+# Healthy:  172.30.3.10 via 172.30.3.129 dev enp2s0f0 ...
+# Affected: broadcast 172.30.3.10 via ... cache <local,brd>
+```
+
+**Fix:** Explicit per-VLAN static routes in `/etc/netplan/00-enp2s0f-config.yaml` ensure
+the kernel resolves cross-VLAN destinations from a real FIB entry rather than creating
+a cached exception that triggers the bug. Current routes configured:
+
+```
+172.30.3.0/26   via 172.30.3.129   # CORE VLAN
+172.30.3.64/26  via 172.30.3.129   # APP VLAN
+172.30.3.248/29 via 172.30.3.129   # DMZ VLAN
+```
+
+If the bug recurs after a reboot or netplan change, verify these routes are present:
+
+```bash
+ip route show | grep 172.30.3
+```
+
+Also ensure `accept_redirects=0` is set (see `/etc/sysctl.d/99-routing.conf`) and that
+RIP/OSPF are disabled on the DAT VLAN interface on the SonicWALL.
+
+---
+
+### Permission denied on local source paths
+
+Local targets (`host: fs`) run rsync as the `fsbackup` user on the local filesystem.
+If files or directories under the source path are not world-readable (e.g. mode `600`
+or `700`), rsync will fail with `Permission denied` and exit code 23.
+
+Fix: grant the `fsbackup` user read access via ACL, recursively:
+
+```bash
+sudo setfacl -R -m u:fsbackup:rX /path/to/source
+sudo setfacl -R -m d:u:fsbackup:rX /path/to/source   # default ACL for new files
+```
+
+The `d:` default ACL ensures future files created in that tree are automatically
+readable by the backup user without needing to re-run setfacl.
