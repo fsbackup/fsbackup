@@ -539,6 +539,27 @@ async def api_browse(request: Request, path: str = ""):
     })
 
 
+@app.get("/api/journal/{unit:path}", response_class=HTMLResponse)
+async def api_journal(request: Request, unit: str, n: int = 80):
+    """Return the last n lines of journalctl output for a unit."""
+    try:
+        r = subprocess.run(
+            ["journalctl", "-u", unit, "-n", str(n), "--no-pager",
+             "--output=short-iso", "--no-hostname"],
+            capture_output=True, text=True, timeout=8
+        )
+        lines = r.stdout.splitlines() if r.returncode == 0 else []
+        error = r.stderr.strip() if r.returncode != 0 else ""
+    except Exception as e:
+        lines, error = [], str(e)
+    return templates.TemplateResponse("partials/journal.html", {
+        "request": request,
+        "unit":    unit,
+        "lines":   lines,
+        "error":   error,
+    })
+
+
 @app.post("/api/run/{action}", response_class=HTMLResponse)
 async def api_run(request: Request, action: str, cls: str = Form(default="")):
     """
@@ -557,12 +578,15 @@ async def api_run(request: Request, action: str, cls: str = Form(default="")):
 
     if unit:
         try:
-            cmd = ["systemctl", "start", unit]
+            # --no-block: send start signal and return immediately without
+            # waiting for the service to reach active state. The 3s status
+            # poller on the Run page will reflect the transition.
+            cmd = ["systemctl", "start", "--no-block", unit]
             if os.geteuid() != 0:
                 cmd = ["sudo"] + cmd
             r = subprocess.run(
                 cmd,
-                capture_output=True, text=True, timeout=10
+                capture_output=True, text=True, timeout=5
             )
             result_ok  = r.returncode == 0
             result_msg = f"Started {unit}" if result_ok else r.stderr.strip()

@@ -45,16 +45,24 @@
         {{ badge("status-runner-" ~ cls, statuses.runner) }}
         <form hx-post="/api/run/runner"
               hx-target="#runner-result-{{ cls }}"
-              hx-swap="innerHTML">
+              hx-swap="innerHTML"
+              hx-on:htmx:before-request="this.querySelector('button').disabled=true; this.querySelector('button').textContent='Starting…'">
           <input type="hidden" name="cls" value="{{ cls }}">
           <button type="submit"
-                  class="bg-brand-600 hover:bg-brand-500 text-white text-xs font-medium px-3 py-1.5 rounded-lg transition-colors">
+                  class="bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-white text-xs font-medium px-3 py-1.5 rounded-lg transition-colors">
             Start
           </button>
         </form>
       </div>
     </div>
     <div id="runner-result-{{ cls }}"></div>
+
+    <!-- Runner journal -->
+    <button type="button"
+            onclick="openJournalModal('fsbackup-runner@{{ cls }}.service')"
+            class="text-xs text-zinc-400 hover:text-zinc-200 transition-colors">
+      ▶ Logs
+    </button>
 
     <!-- Doctor -->
     <div class="flex items-center justify-between border-t border-zinc-100 dark:border-zinc-800 pt-4">
@@ -66,16 +74,25 @@
         {{ badge("status-doctor-" ~ cls, statuses.doctor) }}
         <form hx-post="/api/run/doctor"
               hx-target="#doctor-result-{{ cls }}"
-              hx-swap="innerHTML">
+              hx-swap="innerHTML"
+              hx-on:htmx:before-request="this.querySelector('button').disabled=true; this.querySelector('button').textContent='Starting…'">
           <input type="hidden" name="cls" value="{{ cls }}">
           <button type="submit"
-                  class="bg-brand-600 hover:bg-brand-500 text-white text-xs font-medium px-3 py-1.5 rounded-lg transition-colors">
+                  class="bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-white text-xs font-medium px-3 py-1.5 rounded-lg transition-colors">
             Start
           </button>
         </form>
       </div>
     </div>
     <div id="doctor-result-{{ cls }}"></div>
+
+    <!-- Doctor journal -->
+    <button type="button"
+            onclick="openJournalModal('fsbackup-doctor@{{ cls }}.service')"
+            class="text-xs text-zinc-400 hover:text-zinc-200 transition-colors">
+      ▶ Logs
+    </button>
+
   </div>
   {% endfor %}
 </div>
@@ -99,15 +116,23 @@
         {{ badge("status-" ~ action, status_val) }}
         <form hx-post="/api/run/{{ action }}"
               hx-target="#result-{{ action }}"
-              hx-swap="innerHTML">
+              hx-swap="innerHTML"
+              hx-on:htmx:before-request="this.querySelector('button').disabled=true; this.querySelector('button').textContent='Starting…'">
           <button type="submit"
-                  class="bg-brand-600 hover:bg-brand-500 text-white text-xs font-medium px-3 py-1.5 rounded-lg transition-colors">
+                  class="bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-white text-xs font-medium px-3 py-1.5 rounded-lg transition-colors">
             Start
           </button>
         </form>
       </div>
     </div>
     <div id="result-{{ action }}" class="px-5 pb-1 empty:hidden"></div>
+    <div class="px-5 pb-3">
+      <button type="button"
+              onclick="openJournalModal('fsbackup-{{ action }}.service')"
+              class="text-xs text-zinc-400 hover:text-zinc-200 transition-colors">
+        ▶ Logs
+      </button>
+    </div>
   </div>
   {% endfor %}
 
@@ -117,4 +142,60 @@
   Starting a service requires that the web process can call <code class="font-mono bg-zinc-100 dark:bg-zinc-800 px-1 py-0.5 rounded">systemctl start</code>.
   Ensure the appropriate sudoers entries are in place for the <code class="font-mono bg-zinc-100 dark:bg-zinc-800 px-1 py-0.5 rounded">fsbackup</code> user.
 </p>
+
+<!-- Journal modal -->
+<div id="journal-modal"
+     class="fixed inset-0 z-50 hidden items-center justify-center bg-black/70 backdrop-blur-sm p-4"
+     onclick="if(event.target===this) closeJournalModal()">
+  <div class="bg-zinc-900 border border-zinc-700 rounded-xl shadow-2xl flex flex-col w-full max-w-5xl resize overflow-auto"
+       style="height:80vh; min-width:400px; min-height:300px;">
+    <!-- Header -->
+    <div class="flex items-center justify-between px-4 py-2.5 border-b border-zinc-700 shrink-0">
+      <span id="journal-modal-title" class="text-xs font-mono text-zinc-300"></span>
+      <div class="flex items-center gap-3">
+        <span class="text-xs text-zinc-500">auto-refresh 3s</span>
+        <button onclick="closeJournalModal()"
+                class="text-zinc-400 hover:text-white transition-colors text-lg leading-none">&times;</button>
+      </div>
+    </div>
+    <!-- Content -->
+    <div id="journal-modal-body" class="flex-1 overflow-hidden flex flex-col">
+      <div class="text-zinc-500 text-xs font-mono p-4">Loading…</div>
+    </div>
+  </div>
+</div>
+
+<script>
+let _journalUnit = null;
+let _journalTimer = null;
+
+function openJournalModal(unit) {
+  _journalUnit = unit;
+  document.getElementById('journal-modal-title').textContent = unit;
+  document.getElementById('journal-modal').classList.remove('hidden');
+  document.getElementById('journal-modal').classList.add('flex');
+  loadJournal();
+  _journalTimer = setInterval(loadJournal, 3000);
+}
+
+function closeJournalModal() {
+  clearInterval(_journalTimer);
+  _journalTimer = null;
+  _journalUnit  = null;
+  document.getElementById('journal-modal').classList.add('hidden');
+  document.getElementById('journal-modal').classList.remove('flex');
+  document.getElementById('journal-modal-body').innerHTML = '<div class="text-zinc-500 text-xs font-mono p-4">Loading…</div>';
+}
+
+function loadJournal() {
+  if (!_journalUnit) return;
+  htmx.ajax('GET', '/api/journal/' + encodeURIComponent(_journalUnit), {
+    target: '#journal-modal-body',
+    swap:   'innerHTML',
+  });
+}
+
+// Close on Escape
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeJournalModal(); });
+</script>
 {% endblock %}
