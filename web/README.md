@@ -159,53 +159,48 @@ The `--reload` flag restarts on file changes — remove it in production.
 
 ---
 
-## Permissions
+## Setup
 
-The web app reads snapshot directories and Prometheus `.prom` files. The user
-running the app needs read+execute access to these paths.
-
-**Production (systemd, `User=fsbackup`):** No extra steps — `fsbackup` already
-owns all relevant paths.
-
-**Development (running as another user, e.g. `crash`):** Grant ACLs explicitly.
-Do not add the dev user to `fsbackup` or `nodeexp_txt` groups as that gives
-broader access than needed.
+Run `setup.sh` as root to configure permissions, generate `.env`, install
+dependencies, and optionally install the systemd service:
 
 ```bash
-# Snapshot trees
-sudo setfacl -m u:crash:rX /backup
-sudo setfacl -Rm u:crash:rX /backup/snapshots
-sudo setfacl -m d:u:crash:rX /backup/snapshots
-
-sudo setfacl -m u:crash:rX /backup2
-sudo setfacl -Rm u:crash:rX /backup2/snapshots
-sudo setfacl -m d:u:crash:rX /backup2/snapshots
-
-# Prometheus textfile collector
-sudo setfacl -m u:crash:rx /var/lib/node_exporter/textfile_collector/
-sudo setfacl -Rm u:crash:r /var/lib/node_exporter/textfile_collector/
-sudo setfacl -m d:u:crash:r /var/lib/node_exporter/textfile_collector/
-
-# AWS credentials (for S3 page)
-sudo setfacl -m u:crash:x /var/lib/fsbackup
-sudo setfacl -m u:crash:rx /var/lib/fsbackup/.aws
-sudo setfacl -m u:crash:r /var/lib/fsbackup/.aws/credentials /var/lib/fsbackup/.aws/config
+sudo bash /opt/fsbackup/web/setup.sh
 ```
 
-The app hardcodes `AWS_SHARED_CREDENTIALS_FILE` and `AWS_CONFIG_FILE` to point at
-`/var/lib/fsbackup/.aws/` at startup (via `os.environ.setdefault`), so boto3 finds
-the `fsbackup` profile regardless of which user runs the process. These env vars can
-be overridden in `.env` if your setup differs.
+The script will:
+1. Ask which user will run the web UI
+2. Add that user to the `fsbackup` group (covers snapshot dirs and config files)
+3. Apply ACLs for paths not covered by the group (Prometheus textfile dir, AWS credentials)
+4. Generate a `web/.env` with a random `SECRET_KEY`, prompting for host/port and auth settings
+5. Create the Python venv and install dependencies
+6. Optionally write and enable a systemd unit
 
-> The `-Rm` on snapshot trees is recursive and can be slow on large trees. The
-> default ACL (`-m d:`) ensures new snapshots created after the fact are also
-> readable without re-running the command.
+## Permissions
+
+The `fsbackup` group covers the main paths the app needs. `setup.sh` handles
+this automatically. If you need to understand or redo it manually:
+
+| Path | Access needed | Covered by |
+|------|--------------|------------|
+| `/backup/snapshots` | read + traverse | `fsbackup` group |
+| `/backup2/snapshots` | read + traverse | `fsbackup` group |
+| `/etc/fsbackup/` | read + traverse | `fsbackup` group |
+| `/var/lib/node_exporter/textfile_collector/` | read | ACL (set by setup.sh) |
+| `/var/lib/fsbackup/.aws/` | read | ACL (set by setup.sh) |
+
+The app sets `AWS_SHARED_CREDENTIALS_FILE` and `AWS_CONFIG_FILE` to point at
+`/var/lib/fsbackup/.aws/` at startup, so boto3 finds the `fsbackup` AWS profile
+regardless of which user runs the process.
 
 ---
 
 ## Deploying as a systemd service
 
-Create `/etc/systemd/system/fsbackup-web.service`:
+The easiest way is to let `setup.sh` write and install the unit for you — it
+prompts during setup and uses the correct user, paths, and `.env` location.
+
+To do it manually, create `/etc/systemd/system/fsbackup-web.service`:
 
 ```ini
 [Unit]
@@ -216,24 +211,21 @@ After=network.target
 Type=simple
 User=fsbackup
 WorkingDirectory=/opt/fsbackup/web
-ExecStart=/usr/local/bin/uvicorn main:app --host 0.0.0.0 --port 8080 --workers 2
+ExecStart=/opt/fsbackup/web/.venv/bin/python3 /opt/fsbackup/web/main.py
+EnvironmentFile=/opt/fsbackup/web/.env
 Restart=on-failure
 RestartSec=5
-EnvironmentFile=/opt/fsbackup/web/.env
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-Then enable and start:
+Then:
 
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable --now fsbackup-web.service
 ```
-
-> The unit file above is a starting point. A copy will be added to `systemd/` in
-> the repo once the web UI is stable enough for production use.
 
 ---
 

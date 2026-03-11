@@ -2,6 +2,7 @@
 """fsbackup web UI — FastAPI + HTMX + Tailwind"""
 
 import os
+import secrets
 import subprocess
 import yaml
 from datetime import date, datetime, timedelta
@@ -11,6 +12,7 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
 
 import boto3
+import pam
 from botocore.config import Config as BotoConfig
 from botocore.exceptions import BotoCoreError, ClientError
 
@@ -18,6 +20,7 @@ from fastapi import FastAPI, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.sessions import SessionMiddleware
 
 # ---------------------------------------------------------------------------
 # Config
@@ -60,15 +63,25 @@ def s3_client():
 # App
 # ---------------------------------------------------------------------------
 
+SECRET_KEY   = os.environ.get("SECRET_KEY", secrets.token_hex(32))
+AUTH_ENABLED = os.environ.get("AUTH_ENABLED", "true").lower() not in ("false", "0", "no")
+
 app = FastAPI(title="fsbackup")
 app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
 templates = Jinja2Templates(directory=Path(__file__).parent / "templates")
 
-# Inject `now` into every template context
+_PUBLIC_PATHS = {"/login"}
+
 @app.middleware("http")
-async def inject_globals(request: Request, call_next):
+async def require_login(request: Request, call_next):
+    if AUTH_ENABLED and request.url.path not in _PUBLIC_PATHS and not request.session.get("user"):
+        return RedirectResponse(url=f"/login?next={request.url.path}", status_code=302)
     response = await call_next(request)
     return response
+
+# SessionMiddleware must be added AFTER require_login so it is outermost
+# (Starlette middleware is LIFO — last added = first executed)
+app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY, session_cookie="fsbackup_session", max_age=86400)
 
 # Use a custom TemplateResponse wrapper so every render gets `now`
 _orig_response = templates.TemplateResponse
@@ -179,6 +192,32 @@ def systemd_service_status(unit: str) -> str:
         return result.stdout.strip()
     except Exception:
         return "unknown"
+
+
+# ---------------------------------------------------------------------------
+# Auth
+# ---------------------------------------------------------------------------
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request, next: str = "/"):
+    if request.session.get("user"):
+        return RedirectResponse(url=next, status_code=302)
+    return templates.TemplateResponse("login.html", {"request": request, "next": next, "error": ""})
+
+
+@app.post("/login", response_class=HTMLResponse)
+async def login_submit(request: Request, username: str = Form(...), password: str = Form(...), next: str = Form(default="/")):
+    p = pam.pam()
+    if p.authenticate(username, password):
+        request.session["user"] = username
+        return RedirectResponse(url=next or "/", status_code=302)
+    return templates.TemplateResponse("login.html", {"request": request, "next": next, "error": "Invalid username or password."})
+
+
+@app.get("/logout")
+async def logout(request: Request):
+    request.session.clear()
+    return RedirectResponse(url="/login", status_code=302)
 
 
 # ---------------------------------------------------------------------------
@@ -518,8 +557,11 @@ async def api_run(request: Request, action: str, cls: str = Form(default="")):
 
     if unit:
         try:
+            cmd = ["systemctl", "start", unit]
+            if os.geteuid() != 0:
+                cmd = ["sudo"] + cmd
             r = subprocess.run(
-                ["systemctl", "start", unit],
+                cmd,
                 capture_output=True, text=True, timeout=10
             )
             result_ok  = r.returncode == 0
