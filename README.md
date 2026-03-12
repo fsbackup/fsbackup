@@ -6,6 +6,8 @@ fsbackup is a pull-based snapshot backup system for home lab Linux servers. The 
 
 ## Features
 
+fsbackup is designed around the [3-2-1 backup rule](https://www.backblaze.com/blog/the-3-2-1-backup-strategy/): **3** copies of your data, on **2** different storage media, with **1** copy offsite. Primary snapshots live on the backup server's dedicated drive (copy 1), a second local drive holds a mirror (copy 2, separate media), and S3 export provides the offsite copy (copy 3).
+
 - **Disk-to-disk snapshots over SSH** — pull-based rsync; the backup server initiates all connections, source hosts need no special configuration beyond a read-only `backup` user
 - **Space-efficient snapshot storage** — each snapshot hardlinks unchanged files from the previous run via rsync `--link-dest`; a full snapshot tree costs only the space of changed files
 - **Multi-tier retention** — daily snapshots promote automatically to weekly, monthly, and annual tiers; each tier is independently pruned on a configurable schedule
