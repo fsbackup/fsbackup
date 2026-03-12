@@ -53,9 +53,7 @@ if [[ "$WEB_USER" != "fsbackup" ]]; then
     # 3. ACLs for paths not covered by the fsbackup group
     # -----------------------------------------------------------------------
     info "Applying ACLs for Prometheus textfile collector..."
-    setfacl -m "u:${WEB_USER}:rx" /var/lib/node_exporter/textfile_collector/
-    setfacl -Rm "u:${WEB_USER}:r"  /var/lib/node_exporter/textfile_collector/
-    setfacl -m "d:u:${WEB_USER}:r" /var/lib/node_exporter/textfile_collector/
+    "$SCRIPT_DIR/../utils/fs-nodeexp-fix.sh" --web-user "$WEB_USER"
     ok "/var/lib/node_exporter/textfile_collector/"
 
     info "Applying ACLs for AWS credentials..."
