@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Sign in — fsbackup</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              400: '#60a5fa',
+              500: '#3b82f6',
+              600: '#2563eb',
+            }
+          }
+        }
+      }
+    }
+    // Apply saved theme before paint
+    if (localStorage.getItem('theme') === 'light') {
+      document.documentElement.classList.remove('dark');
+    }
+  </script>
+</head>
+<body class="bg-zinc-100 dark:bg-zinc-950 min-h-screen flex items-center justify-center">
+
+  <div class="w-full max-w-sm">
+    <!-- Logo / title -->
+    <div class="text-center mb-8">
+      <div class="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-brand-600 mb-4">
+        <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M5 12H3l9-9 9 9h-2M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7"/>
+        </svg>
+      </div>
+      <h1 class="text-xl font-bold text-zinc-900 dark:text-white">fsbackup</h1>
+      <p class="text-sm text-zinc-500 mt-1">Sign in with your system account</p>
+    </div>
+
+    <!-- Card -->
+    <div class="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl shadow-sm p-6">
+      {% if error %}
+      <div class="mb-4 px-3 py-2 rounded-lg bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-400 text-sm">
+        {{ error }}
+      </div>
+      {% endif %}
+
+      <form method="post" action="/login" class="space-y-4">
+        <input type="hidden" name="next" value="{{ next }}"/>
+
+        <div>
+          <label class="block text-xs font-medium text-zinc-600 dark:text-zinc-400 mb-1">Username</label>
+          <input type="text" name="username" autocomplete="username" autofocus required
+                 class="w-full bg-zinc-50 dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 text-zinc-900 dark:text-zinc-100 text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-brand-500"/>
+        </div>
+
+        <div>
+          <label class="block text-xs font-medium text-zinc-600 dark:text-zinc-400 mb-1">Password</label>
+          <input type="password" name="password" autocomplete="current-password" required
+                 class="w-full bg-zinc-50 dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 text-zinc-900 dark:text-zinc-100 text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-brand-500"/>
+        </div>
+
+        <button type="submit"
+                class="w-full bg-brand-600 hover:bg-brand-500 text-white text-sm font-medium px-4 py-2.5 rounded-lg transition-colors">
+          Sign in
+        </button>
+      </form>
+    </div>
+  </div>
+
+</body>
+</html>

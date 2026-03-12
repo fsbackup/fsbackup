@@ -114,7 +114,7 @@ Repository path: **utils/**
 |----------|------|-------------|------------|
 | `fs-restore.sh` | Restore files | Browse available snapshots and restore files to a local path or push to a remote host over SSH. See the [Restore](#restore) section for full usage. | `list --type <tier> [--class <class>] [--date <key>]`; `restore --type <tier> --class <class> --id <id> [--date <key>\|--latest] --to <path>` |
 | `fs-trust-host.sh` | Seed SSH host keys | Adds a host's SSH key to the backup user's `known_hosts`. Run once when adding a new host. | `<hostname>` |
-| `fs-nodeexp-fix.sh` | Fix metric file permissions | Repairs ownership and permissions on node_exporter textfile collector files if they become unreadable. | none |
+| `fs-nodeexp-fix.sh` | Fix metric file permissions | Repairs ownership and permissions on node_exporter textfile collector files if they become unreadable. Optionally grants read ACLs to the web UI user. | `[--web-user <username>]` |
 | `fs-annual-mirror-check.sh` | Verify annual mirror sync | Checks that annual snapshots on the primary drive are present on the mirror. Run after the January annual promotion. | none |
 | `fs-target-rename.sh` | Rename a target | Renames a target directory across all snapshot tiers on both primary and mirror storage. Use when a target ID changes in `targets.yml`. | `--class <class> --from <old-id> --to <new-id> --move\|--delete` |
 

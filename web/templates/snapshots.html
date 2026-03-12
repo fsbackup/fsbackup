@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+{% block title %}Snapshots — fsbackup{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+  <h1 class="text-2xl font-bold text-zinc-900 dark:text-white">Snapshots</h1>
+  <p class="text-zinc-500 text-sm mt-1">{{ snapshots|length }} snapshot{{ 's' if snapshots|length != 1 }} found</p>
+</div>
+
+<!-- Filters -->
+<div class="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl p-4 mb-6 shadow-sm">
+  <form id="filter-form"
+        class="flex flex-wrap gap-3 items-end"
+        hx-get="/api/snapshots"
+        hx-target="#snapshot-rows"
+        hx-trigger="change from:select, input from:input[name='snap_date'], submit"
+        hx-include="this">
+
+    <!-- Tier -->
+    <div>
+      <label class="block text-xs text-zinc-500 mb-1">Tier</label>
+      <select name="tier" id="filter-tier"
+              onchange="onTierChange(this.value)"
+              class="bg-zinc-50 dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 text-zinc-900 dark:text-zinc-100 text-sm rounded-lg px-3 py-1.5 focus:outline-none focus:border-brand-500">
+        <option value="">All tiers</option>
+        {% for t in tiers %}
+          <option value="{{ t }}" {% if filter_tier == t %}selected{% endif %}>{{ t }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <!-- Date -->
+    <div id="date-filter-wrap">
+      <label class="block text-xs text-zinc-500 mb-1" id="date-label">Date</label>
+      <input type="text" name="snap_date" id="filter-date"
+             value="{{ filter_date }}"
+             list="tier-dates"
+             autocomplete="off"
+             placeholder="{% if filter_tier == 'daily' %}YYYY-MM-DD{% elif filter_tier == 'weekly' %}YYYY-Www{% elif filter_tier == 'monthly' %}YYYY-MM{% elif filter_tier == 'annual' %}YYYY{% else %}any{% endif %}"
+             class="bg-zinc-50 dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 text-zinc-900 dark:text-zinc-100 text-sm font-mono rounded-lg px-3 py-1.5 w-36 focus:outline-none focus:border-brand-500"/>
+      <!-- Populated dynamically by onTierChange -->
+      <datalist id="tier-dates">
+        {% for d in tier_dates %}<option value="{{ d }}">{% endfor %}
+      </datalist>
+    </div>
+
+    <!-- Class -->
+    <div>
+      <label class="block text-xs text-zinc-500 mb-1">Class</label>
+      <select name="cls" class="bg-zinc-50 dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 text-zinc-900 dark:text-zinc-100 text-sm rounded-lg px-3 py-1.5 focus:outline-none focus:border-brand-500">
+        <option value="">All classes</option>
+        {% for c in classes %}
+          <option value="{{ c }}" {% if filter_class == c %}selected{% endif %}>{{ c }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <!-- Target -->
+    <div>
+      <label class="block text-xs text-zinc-500 mb-1">Target</label>
+      <select name="target" class="bg-zinc-50 dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 text-zinc-900 dark:text-zinc-100 text-sm rounded-lg px-3 py-1.5 focus:outline-none focus:border-brand-500">
+        <option value="">All targets</option>
+        {% for t in all_targets %}
+          <option value="{{ t }}" {% if filter_target == t %}selected{% endif %}>{{ t }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <!-- Clear -->
+    <div class="ml-auto self-end">
+      <a href="/snapshots?no_date=1"
+         class="text-xs text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 px-3 py-1.5 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors">
+        Reset
+      </a>
+    </div>
+  </form>
+</div>
+
+<!-- Table -->
+<div class="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl overflow-hidden shadow-sm">
+  <table class="w-full text-sm">
+    <thead>
+      <tr class="border-b border-zinc-200 dark:border-zinc-800 text-left text-xs text-zinc-500 uppercase tracking-wider bg-zinc-50 dark:bg-zinc-800/50">
+        <th class="px-4 py-3 font-medium">Tier</th>
+        <th class="px-4 py-3 font-medium">Date</th>
+        <th class="px-4 py-3 font-medium">Class</th>
+        <th class="px-4 py-3 font-medium">Target</th>
+        <th class="px-4 py-3 font-medium">Mirrored</th>
+        <th class="px-4 py-3 font-medium">Expires</th>
+        <th class="px-4 py-3 font-medium"></th>
+      </tr>
+    </thead>
+    <tbody id="snapshot-rows" class="divide-y divide-zinc-100 dark:divide-zinc-800">
+      {% include "partials/snapshot_rows.html" %}
+    </tbody>
+  </table>
+</div>
+
+<script>
+  const today = "{{ today_str }}";
+
+  const datePlaceholders = {
+    "daily":   "YYYY-MM-DD",
+    "weekly":  "YYYY-Www",
+    "monthly": "YYYY-MM",
+    "annual":  "YYYY",
+    "":        "any",
+  };
+
+  function onTierChange(tier) {
+    const dateInput = document.getElementById("filter-date");
+    const dateLabel = document.getElementById("date-label");
+
+    // Set sensible default date for the chosen tier
+    if (tier === "daily") {
+      dateInput.value = today;
+    } else {
+      dateInput.value = "";
+    }
+
+    dateInput.placeholder = datePlaceholders[tier] || "any";
+
+    // Refresh the datalist options for this tier
+    htmx.ajax("GET", "/api/tier-dates?tier=" + encodeURIComponent(tier), {
+      target: "#tier-dates-wrapper",
+      swap: "innerHTML",
+    });
+  }
+</script>
+<!-- Hidden wrapper for datalist refresh -->
+<div id="tier-dates-wrapper" style="display:none"></div>
+{% endblock %}

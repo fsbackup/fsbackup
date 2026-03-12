@@ -107,6 +107,20 @@ chown root:nodeexp_txt /var/lib/node_exporter/textfile_collector
 chmod 2775 /var/lib/node_exporter/textfile_collector
 ```
 
+Or use the repair utility, which handles all of the above and also sets default ACLs so new metric files stay readable:
+
+```bash
+sudo /opt/fsbackup/utils/fs-nodeexp-fix.sh
+```
+
+If you're also running the web UI under a separate user, pass `--web-user` to grant that user read access (including a default ACL so future files inherit it):
+
+```bash
+sudo /opt/fsbackup/utils/fs-nodeexp-fix.sh --web-user fsbackup
+```
+
+The web UI `setup.sh` calls this automatically when the web user differs from `fsbackup`.
+
 ---
 
 ## 8. Deploy systemd units

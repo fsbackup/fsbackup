@@ -16,3 +16,7 @@ conf/fsbackup.conf
 .DS_Store
 *.swp
 *~
+web/__pycache__/
+**/__pycache__/
+*.pyc
+web/.venv/

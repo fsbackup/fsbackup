@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}Restore — fsbackup{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+  <h1 class="text-2xl font-bold text-zinc-900 dark:text-white">Restore</h1>
+  <p class="text-zinc-500 text-sm mt-1">Restore files from a snapshot to a target path</p>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+  <!-- Restore form -->
+  <div class="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl p-6 shadow-sm">
+    <h2 class="text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-4">Restore snapshot</h2>
+    <form hx-post="/api/run/restore" hx-target="#restore-result" hx-swap="innerHTML" class="space-y-4"
+          hx-on:htmx:before-request="this.querySelector('button[type=submit]').disabled=true; this.querySelector('button[type=submit]').textContent='Restoring…'; document.getElementById('restore-result').innerHTML='<div class=\'text-zinc-400 text-xs font-mono p-3 animate-pulse\'>Running rsync…</div>'"
+          hx-on:htmx:after-request="this.querySelector('button[type=submit]').disabled=false; this.querySelector('button[type=submit]').textContent='Restore'">
+      <div>
+        <label class="block text-xs text-zinc-500 mb-1">Snapshot path</label>
+        <input type="text" name="snapshot_path" value="{{ snapshot_path }}"
+               placeholder="/backup/snapshots/daily/2025-01-01/class1/myhost.myapp"
+               class="w-full bg-zinc-50 dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 text-zinc-900 dark:text-zinc-100 text-sm font-mono rounded-lg px-3 py-2 focus:outline-none focus:border-brand-500"/>
+        <p class="text-xs text-zinc-400 mt-1">Full path to the snapshot directory</p>
+      </div>
+      <div>
+        <label class="block text-xs text-zinc-500 mb-1">Destination path</label>
+        <input type="text" name="dest" value="{{ dest }}"
+               placeholder="/restore/target"
+               class="w-full bg-zinc-50 dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 text-zinc-900 dark:text-zinc-100 text-sm font-mono rounded-lg px-3 py-2 focus:outline-none focus:border-brand-500"/>
+        <p class="text-xs text-zinc-400 mt-1">Local path to restore into</p>
+      </div>
+      <div class="flex items-center gap-2 pt-1">
+        <input type="checkbox" id="dry_run" name="dry_run" value="1" checked
+               class="rounded bg-zinc-100 dark:bg-zinc-800 border-zinc-300 dark:border-zinc-600 text-brand-600 focus:ring-brand-500">
+        <label for="dry_run" class="text-sm text-zinc-700 dark:text-zinc-300">Dry run (preview only)</label>
+      </div>
+      <button type="submit"
+              class="w-full bg-brand-600 hover:bg-brand-500 text-white text-sm font-medium px-4 py-2.5 rounded-lg transition-colors">
+        Restore
+      </button>
+    </form>
+    <div id="restore-result" class="mt-4"></div>
+  </div>
+
+  <!-- Quick-select from recent snapshots -->
+  <div class="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl p-6 shadow-sm">
+    <h2 class="text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-4">Recent snapshots</h2>
+    <div class="space-y-0.5 max-h-96 overflow-y-auto pr-1">
+      {% for s in snapshots[:40] %}
+      <button type="button"
+              onclick="document.querySelector('[name=snapshot_path]').value='{{ s.path }}'"
+              class="w-full text-left px-3 py-2 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors group">
+        <div class="flex items-center gap-2">
+          {% set tier_colors = {
+            "daily":   "text-sky-600 dark:text-sky-400",
+            "weekly":  "text-violet-600 dark:text-violet-400",
+            "monthly": "text-amber-600 dark:text-amber-400",
+            "annual":  "text-rose-600 dark:text-rose-400"
+          } %}
+          <span class="text-xs {{ tier_colors.get(s.tier, 'text-zinc-400') }} w-14 shrink-0">{{ s.tier }}</span>
+          <span class="text-xs font-mono text-zinc-400 w-24 shrink-0">{{ s.date }}</span>
+          <span class="text-xs text-zinc-600 dark:text-zinc-400 group-hover:text-zinc-900 dark:group-hover:text-white truncate">{{ s.class }} / {{ s.target }}</span>
+        </div>
+      </button>
+      {% else %}
+      <p class="text-sm text-zinc-400">No snapshots found.</p>
+      {% endfor %}
+    </div>
+  </div>
+
+</div>
+
+<!-- Instructions -->
+<div class="mt-6 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl p-5 shadow-sm">
+  <h2 class="text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">Manual restore</h2>
+  <p class="text-xs text-zinc-400 mb-3">To restore from the command line:</p>
+  <pre class="text-xs text-zinc-700 dark:text-zinc-300 font-mono bg-zinc-50 dark:bg-zinc-950 rounded-lg p-4 overflow-x-auto">/opt/fsbackup/utils/fs-restore.sh --snapshot /backup/snapshots/&lt;tier&gt;/&lt;date&gt;/&lt;class&gt;/&lt;target&gt; --dest /restore/path</pre>
+  <p class="text-xs text-zinc-400 mt-4">For S3 archives:</p>
+  <pre class="text-xs text-zinc-700 dark:text-zinc-300 font-mono bg-zinc-50 dark:bg-zinc-950 rounded-lg p-4 mt-1 overflow-x-auto">aws s3 cp s3://fsbackup-snapshots-947012/&lt;tier&gt;/&lt;class&gt;/&lt;target&gt;/&lt;archive&gt;.tar.zst.age . \
+  &amp;&amp; age -d -i /etc/fsbackup/age.key &lt;archive&gt;.tar.zst.age | zstd -d | tar -xf - -C /restore/path/</pre>
+</div>
+{% endblock %}

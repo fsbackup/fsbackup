@@ -1,0 +1,204 @@
+{% extends "base.html" %}
+{% block title %}Run — fsbackup{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+  <h1 class="text-2xl font-bold text-zinc-900 dark:text-white">Run Jobs</h1>
+  <p class="text-zinc-500 text-sm mt-1">Trigger systemd services manually</p>
+</div>
+
+<!-- Live status poller — updates all status badges every 3s via hx-swap-oob -->
+<div hx-get="/api/run/status"
+     hx-trigger="every 3s"
+     hx-swap="none"
+     style="display:none"></div>
+
+{% macro badge(id, val) %}
+  <span id="{{ id }}" class="inline-flex items-center gap-1 text-xs font-medium
+    {% if val == 'active' %}text-emerald-600 dark:text-emerald-400
+    {% elif val == 'failed' %}text-red-500 dark:text-red-400
+    {% elif val == 'activating' %}text-amber-500 dark:text-amber-400
+    {% else %}text-zinc-400{% endif %}">
+    <span class="w-1.5 h-1.5 rounded-full
+      {% if val == 'active' %}bg-emerald-500
+      {% elif val == 'failed' %}bg-red-500
+      {% elif val == 'activating' %}bg-amber-400 animate-pulse
+      {% else %}bg-zinc-400{% endif %}"></span>
+    {{ val }}
+  </span>
+{% endmacro %}
+
+<!-- Per-class runner / doctor -->
+<h2 class="text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-3">Classes</h2>
+<div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
+  {% for cls, statuses in units.items() %}
+  <div class="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl p-5 shadow-sm space-y-4">
+    <h3 class="text-sm font-bold text-zinc-900 dark:text-white uppercase tracking-wide">{{ cls }}</h3>
+
+    <!-- Runner -->
+    <div class="flex items-center justify-between">
+      <div>
+        <p class="text-xs font-medium text-zinc-700 dark:text-zinc-300">Runner</p>
+        <p class="text-xs text-zinc-400 font-mono">fsbackup-runner@{{ cls }}</p>
+      </div>
+      <div class="flex items-center gap-2">
+        {{ badge("status-runner-" ~ cls, statuses.runner) }}
+        <form hx-post="/api/run/runner"
+              hx-target="#runner-result-{{ cls }}"
+              hx-swap="innerHTML"
+              hx-on:htmx:before-request="this.querySelector('button').disabled=true; this.querySelector('button').textContent='Starting…'"
+              hx-on:htmx:after-request="this.querySelector('button').disabled=false; this.querySelector('button').textContent='Start'">
+          <input type="hidden" name="cls" value="{{ cls }}">
+          <button type="submit"
+                  class="bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-white text-xs font-medium px-3 py-1.5 rounded-lg transition-colors">
+            Start
+          </button>
+        </form>
+      </div>
+    </div>
+    <div id="runner-result-{{ cls }}"></div>
+
+    <!-- Runner journal -->
+    <button type="button"
+            onclick="openJournalModal('fsbackup-runner@{{ cls }}.service')"
+            class="text-xs text-zinc-400 hover:text-zinc-200 transition-colors">
+      ▶ Logs
+    </button>
+
+    <!-- Doctor -->
+    <div class="flex items-center justify-between border-t border-zinc-100 dark:border-zinc-800 pt-4">
+      <div>
+        <p class="text-xs font-medium text-zinc-700 dark:text-zinc-300">Doctor</p>
+        <p class="text-xs text-zinc-400 font-mono">fsbackup-doctor@{{ cls }}</p>
+      </div>
+      <div class="flex items-center gap-2">
+        {{ badge("status-doctor-" ~ cls, statuses.doctor) }}
+        <form hx-post="/api/run/doctor"
+              hx-target="#doctor-result-{{ cls }}"
+              hx-swap="innerHTML"
+              hx-on:htmx:before-request="this.querySelector('button').disabled=true; this.querySelector('button').textContent='Starting…'"
+              hx-on:htmx:after-request="this.querySelector('button').disabled=false; this.querySelector('button').textContent='Start'">
+          <input type="hidden" name="cls" value="{{ cls }}">
+          <button type="submit"
+                  class="bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-white text-xs font-medium px-3 py-1.5 rounded-lg transition-colors">
+            Start
+          </button>
+        </form>
+      </div>
+    </div>
+    <div id="doctor-result-{{ cls }}"></div>
+
+    <!-- Doctor journal -->
+    <button type="button"
+            onclick="openJournalModal('fsbackup-doctor@{{ cls }}.service')"
+            class="text-xs text-zinc-400 hover:text-zinc-200 transition-colors">
+      ▶ Logs
+    </button>
+
+  </div>
+  {% endfor %}
+</div>
+
+<!-- System jobs -->
+<h2 class="text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-3">System jobs</h2>
+<div class="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl shadow-sm divide-y divide-zinc-100 dark:divide-zinc-800">
+
+  {% for action, label, desc, status_val in [
+    ("promote", "Promote",        "daily → weekly / monthly",     promote_status),
+    ("mirror",  "Mirror (daily)", "Sync primary → mirror drive",  mirror_status),
+  ] %}
+  <div>
+    <div class="flex items-center justify-between px-5 py-4">
+      <div>
+        <p class="text-sm font-medium text-zinc-800 dark:text-zinc-200">{{ label }}</p>
+        <p class="text-xs text-zinc-400">{{ desc }}</p>
+        <p class="text-xs text-zinc-300 dark:text-zinc-600 font-mono mt-0.5">fsbackup-{{ action }}.service</p>
+      </div>
+      <div class="flex items-center gap-3">
+        {{ badge("status-" ~ action, status_val) }}
+        <form hx-post="/api/run/{{ action }}"
+              hx-target="#result-{{ action }}"
+              hx-swap="innerHTML"
+              hx-on:htmx:before-request="this.querySelector('button').disabled=true; this.querySelector('button').textContent='Starting…'"
+              hx-on:htmx:after-request="this.querySelector('button').disabled=false; this.querySelector('button').textContent='Start'">
+          <button type="submit"
+                  class="bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-white text-xs font-medium px-3 py-1.5 rounded-lg transition-colors">
+            Start
+          </button>
+        </form>
+      </div>
+    </div>
+    <div id="result-{{ action }}" class="px-5 pb-1 empty:hidden"></div>
+    <div class="px-5 pb-3">
+      <button type="button"
+              onclick="openJournalModal('fsbackup-{{ action }}.service')"
+              class="text-xs text-zinc-400 hover:text-zinc-200 transition-colors">
+        ▶ Logs
+      </button>
+    </div>
+  </div>
+  {% endfor %}
+
+</div>
+
+<p class="text-xs text-zinc-400 mt-4">
+  Starting a service requires that the web process can call <code class="font-mono bg-zinc-100 dark:bg-zinc-800 px-1 py-0.5 rounded">systemctl start</code>.
+  Ensure the appropriate sudoers entries are in place for the <code class="font-mono bg-zinc-100 dark:bg-zinc-800 px-1 py-0.5 rounded">fsbackup</code> user.
+</p>
+
+<!-- Journal modal -->
+<div id="journal-modal"
+     class="fixed inset-0 z-50 hidden items-center justify-center bg-black/70 backdrop-blur-sm p-4"
+     onclick="if(event.target===this) closeJournalModal()">
+  <div class="bg-zinc-900 border border-zinc-700 rounded-xl shadow-2xl flex flex-col w-full max-w-5xl resize overflow-auto"
+       style="height:80vh; min-width:400px; min-height:300px;">
+    <!-- Header -->
+    <div class="flex items-center justify-between px-4 py-2.5 border-b border-zinc-700 shrink-0">
+      <span id="journal-modal-title" class="text-xs font-mono text-zinc-300"></span>
+      <div class="flex items-center gap-3">
+        <span class="text-xs text-zinc-500">auto-refresh 3s</span>
+        <button onclick="closeJournalModal()"
+                class="text-zinc-400 hover:text-white transition-colors text-lg leading-none">&times;</button>
+      </div>
+    </div>
+    <!-- Content -->
+    <div id="journal-modal-body" class="flex-1 overflow-hidden flex flex-col">
+      <div class="text-zinc-500 text-xs font-mono p-4">Loading…</div>
+    </div>
+  </div>
+</div>
+
+<script>
+let _journalUnit = null;
+let _journalTimer = null;
+
+function openJournalModal(unit) {
+  _journalUnit = unit;
+  document.getElementById('journal-modal-title').textContent = unit;
+  document.getElementById('journal-modal').classList.remove('hidden');
+  document.getElementById('journal-modal').classList.add('flex');
+  loadJournal();
+  _journalTimer = setInterval(loadJournal, 3000);
+}
+
+function closeJournalModal() {
+  clearInterval(_journalTimer);
+  _journalTimer = null;
+  _journalUnit  = null;
+  document.getElementById('journal-modal').classList.add('hidden');
+  document.getElementById('journal-modal').classList.remove('flex');
+  document.getElementById('journal-modal-body').innerHTML = '<div class="text-zinc-500 text-xs font-mono p-4">Loading…</div>';
+}
+
+function loadJournal() {
+  if (!_journalUnit) return;
+  htmx.ajax('GET', '/api/journal/' + encodeURIComponent(_journalUnit), {
+    target: '#journal-modal-body',
+    swap:   'innerHTML',
+  });
+}
+
+// Close on Escape
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeJournalModal(); });
+</script>
+{% endblock %}

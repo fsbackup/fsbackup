@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}Browse — fsbackup{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+  <h1 class="text-2xl font-bold text-zinc-900 dark:text-white">Browse Snapshots</h1>
+  <p class="text-zinc-500 text-sm mt-1">Navigate files within a snapshot directory</p>
+</div>
+
+<!-- Path input -->
+<div class="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl p-4 mb-6 shadow-sm">
+  <form method="get" class="flex gap-3 items-end">
+    <div class="flex-1">
+      <label class="block text-xs text-zinc-500 mb-1">Snapshot path</label>
+      <input type="text" name="path" value="{{ current_path }}"
+             placeholder="{{ snapshot_root }}/daily/2025-01-01/class1/myhost.myapp"
+             class="w-full bg-zinc-50 dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 text-zinc-900 dark:text-zinc-100 text-sm font-mono rounded-lg px-3 py-2 focus:outline-none focus:border-brand-500"/>
+    </div>
+    <button type="submit"
+            class="bg-brand-600 hover:bg-brand-500 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">
+      Browse
+    </button>
+  </form>
+</div>
+
+{% if error %}
+  <div class="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl px-4 py-3 text-red-700 dark:text-red-400 text-sm mb-6">{{ error }}</div>
+{% endif %}
+
+{% if current_path %}
+<!-- Breadcrumb -->
+<div class="flex items-center gap-1.5 text-sm mb-4 flex-wrap">
+  <a href="/browse" class="text-brand-600 dark:text-brand-400 hover:text-brand-700 dark:hover:text-brand-300">root</a>
+  {% for crumb in breadcrumbs %}
+    <span class="text-zinc-300 dark:text-zinc-600">/</span>
+    <a href="/browse?path={{ crumb.path | urlencode }}"
+       class="text-brand-600 dark:text-brand-400 hover:text-brand-700 dark:hover:text-brand-300 font-mono text-xs">{{ crumb.name }}</a>
+  {% endfor %}
+</div>
+
+<!-- Directory listing -->
+<div class="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl overflow-hidden shadow-sm">
+  <table class="w-full text-sm">
+    <thead>
+      <tr class="border-b border-zinc-200 dark:border-zinc-800 text-left text-xs text-zinc-500 uppercase tracking-wider bg-zinc-50 dark:bg-zinc-800/50">
+        <th class="px-4 py-3 font-medium">Name</th>
+        <th class="px-4 py-3 font-medium">Size</th>
+        <th class="px-4 py-3 font-medium">Modified</th>
+        <th class="px-4 py-3 font-medium"></th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-zinc-100 dark:divide-zinc-800">
+      {% if parent_path and parent_path != snapshot_root %}
+      <tr class="hover:bg-zinc-50 dark:hover:bg-zinc-800/50 transition-colors">
+        <td class="px-4 py-2.5 font-mono text-zinc-400 text-xs" colspan="4">
+          <a href="/browse?path={{ parent_path | urlencode }}" class="hover:text-zinc-700 dark:hover:text-white">&larr; ..</a>
+        </td>
+      </tr>
+      {% endif %}
+      {% include "partials/dir_entries.html" %}
+    </tbody>
+  </table>
+</div>
+
+<div class="mt-4 flex justify-end">
+  <a href="/restore?snapshot_path={{ current_path | urlencode }}"
+     class="bg-brand-600 hover:bg-brand-500 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">
+    Restore this snapshot &rarr;
+  </a>
+</div>
+
+{% else %}
+<div class="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl p-8 text-center text-zinc-400 text-sm shadow-sm">
+  Enter a snapshot path above to browse its contents, or
+  <a href="/snapshots" class="text-brand-600 dark:text-brand-400 hover:text-brand-700 dark:hover:text-brand-300">choose a snapshot</a> from the snapshots page.
+</div>
+{% endif %}
+{% endblock %}
