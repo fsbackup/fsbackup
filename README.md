@@ -1,6 +1,32 @@
 # fsbackup
 
-fsbackup is a pull-based snapshot backup system for home lab Linux servers. The backup host connects outbound over SSH to each source host, pulls data with rsync, and stores point-in-time snapshots organized by date and tier. Snapshots are mirrored to a second local drive and (optionally) exported to S3.
+fsbackup is a pull-based snapshot backup system for home lab Linux servers. The backup host connects outbound over SSH to each source host, pulls data with rsync, and stores point-in-time snapshots organized by date and tier. Snapshots are mirrored to a second local drive and optionally exported to encrypted offsite archives in S3. A [browser-based web UI](#web-ui) provides monitoring, snapshot browsing, and restore — including an S3 bucket browser.
+
+---
+
+## Features
+
+- **Disk-to-disk snapshots over SSH** — pull-based rsync; the backup server initiates all connections, source hosts need no special configuration beyond a read-only `backup` user
+- **Space-efficient snapshot storage** — each snapshot hardlinks unchanged files from the previous run via rsync `--link-dest`; a full snapshot tree costs only the space of changed files
+- **Multi-tier retention** — daily snapshots promote automatically to weekly, monthly, and annual tiers; each tier is independently pruned on a configurable schedule
+- **Mirror to a second drive** — all snapshots are rsynced to a secondary local drive for an additional layer of redundancy; per-class mirror exclusions are supported
+- **Database export tool** — `fs-db-export.sh` dumps PostgreSQL, MySQL, and MariaDB databases to a staging directory before backup runs, ensuring the snapshot captures a consistent, closed database file rather than live data
+- **Encrypted offsite export to S3** — weekly, monthly, and annual snapshots are compressed with zstd, encrypted end-to-end with [age](https://github.com/FiloSottile/age), and uploaded to Amazon S3; the private key never touches the backup server
+- **S3 lifecycle management** — retention on S3 is handled entirely by prefix-based lifecycle rules; the export script never deletes anything
+- **Web UI** — FastAPI + HTMX dashboard for monitoring backup health, browsing the snapshot tree, running jobs on demand, and initiating restores; includes an S3 bucket browser with one-click restore command generation
+- **Prometheus metrics + Grafana dashboard** — every script emits textfile collector metrics covering snapshot size, file deltas, transfer bytes, exit codes, and timing; a pre-built Grafana dashboard is included
+- **Health checks** — `fs-doctor.sh` verifies SSH connectivity, validates source paths, detects orphaned snapshot directories, and checks annual snapshot immutability before each backup window
+
+---
+
+## How it works
+
+1. A `backup` user is created on each source host with read-only SSH access to the directories being backed up.
+2. The backup host runs rsync over SSH, pulling data into dated snapshot directories.
+3. Each new daily snapshot uses rsync's `--link-dest` option so unchanged files are hardlinked rather than copied, keeping storage usage low.
+4. Older snapshots are promoted to weekly, monthly, and annual tiers on a schedule, then pruned when they age out.
+5. The secondary drive (`/backup2`) is kept in sync as a mirror.
+6. Prometheus metrics are written after each run so Grafana can show backup health at a glance.
 
 ---
 
@@ -21,17 +47,6 @@ fsbackup is a pull-based snapshot backup system for home lab Linux servers. The 
 - [Restore from S3](#restore-from-s3)
 - [Deploying systemd unit changes](#deploying-systemd-unit-changes)
 - [Further reading](#further-reading)
-
----
-
-## How it works
-
-1. A `backup` user is created on each source host with read-only SSH access to the directories being backed up.
-2. The backup host runs rsync over SSH, pulling data into dated snapshot directories.
-3. Each new daily snapshot uses rsync's `--link-dest` option so unchanged files are hardlinked rather than copied, keeping storage usage low.
-4. Older snapshots are promoted to weekly, monthly, and annual tiers on a schedule, then pruned when they age out.
-5. The secondary drive (`/backup2`) is kept in sync as a mirror.
-6. Prometheus metrics are written after each run so Grafana can show backup health at a glance.
 
 ---
 
