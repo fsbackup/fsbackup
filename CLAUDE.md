@@ -117,7 +117,7 @@ Units use template instantiation (`@class1`, `@class2`, `@class3`) for runner an
 - Upload format: `tar | zstd -6 | age -e -R age.pub` → `<target>--<date>.tar.zst.age`
 - Encryption: age public-key encryption (`/etc/fsbackup/age.pub` on server, private key stored off-server)
 - Transit: HTTPS via AWS CLI (automatic); at-rest: SSE-S3 (AES-256) on bucket
-- Bucket: `fsbackup-snapshots-947012` (us-west-2, private, versioning enabled)
+- Bucket: `fsbackup-snapshots-SUFFIX` (us-west-2, private, versioning enabled)
 - IAM user `fsbackup-uploader`: PutObject + GetObject + ListBucket only; no delete
 - AWS credentials: profile `fsbackup` in `/var/lib/fsbackup/.aws/`
 - Tiers uploaded: weekly + monthly + annual only (no daily, no class3)
@@ -131,7 +131,7 @@ Units use template instantiation (`@class1`, `@class2`, `@class3`) for runner an
 
 **Restore:**
 ```bash
-aws s3 cp s3://fsbackup-snapshots-947012/<tier>/<class>/<target>/<archive>.tar.zst.age .
+aws s3 cp s3://fsbackup-snapshots-SUFFIX/<tier>/<class>/<target>/<archive>.tar.zst.age .
 age -d -i /etc/fsbackup/age.key <archive>.tar.zst.age | zstd -d | tar -xf - -C /restore/path/
 ```
 
