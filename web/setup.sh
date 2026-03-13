@@ -82,6 +82,26 @@ fi
 echo
 
 # ---------------------------------------------------------------------------
+# 3c. shadow group (needed for PAM auth to read /etc/shadow)
+# ---------------------------------------------------------------------------
+if id -nG "$WEB_USER" | grep -qw shadow; then
+    ok "$WEB_USER is already in the shadow group"
+else
+    info "Adding $WEB_USER to the shadow group (needed for PAM authentication)..."
+    usermod -aG shadow "$WEB_USER"
+    ok "Added — service must be restarted for the new group to take effect"
+fi
+echo
+
+# ---------------------------------------------------------------------------
+# 3d. ACL on /etc/fsbackup/ (needed to write targets.yml from the web UI)
+# ---------------------------------------------------------------------------
+info "Applying write ACL on /etc/fsbackup/ (needed for targets.yml editor)..."
+setfacl -m "u:${WEB_USER}:rwx" /etc/fsbackup/
+ok "/etc/fsbackup/ write ACL set for $WEB_USER"
+echo
+
+# ---------------------------------------------------------------------------
 # 4. Write web/.env
 # ---------------------------------------------------------------------------
 ENV_FILE="$SCRIPT_DIR/.env"
