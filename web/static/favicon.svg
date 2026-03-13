@@ -1,28 +1,25 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
 <defs>
-<radialGradient id="disc" cx="40%" cy="40%" r="70%">
-<stop offset="0%" stop-color="#4b4f55"/>
-<stop offset="60%" stop-color="#2f3338"/>
-<stop offset="100%" stop-color="#1b1e22"/>
+<radialGradient id="disc" cx="38%" cy="38%" r="72%">
+  <stop offset="0%"   stop-color="#e8884a"/>
+  <stop offset="55%"  stop-color="#c0622a"/>
+  <stop offset="100%" stop-color="#7a3612"/>
 </radialGradient>
 </defs>
 
-<!-- Disc (no background rect — transparent outside disc) -->
-<circle cx="130" cy="128" r="92" fill="url(#disc)" stroke="#c9ccd1" stroke-width="3"/>
+<!-- Disc — warm muted orange, stays bright across the face -->
+<circle cx="130" cy="128" r="92" fill="url(#disc)" stroke="#f4b896" stroke-width="3"/>
 
-<!-- Orange reflections -->
-<path d="M130 128 L70 60 A80 80 0 0 1 130 48 Z" fill="#ff9f2a" opacity=".45"/>
-<path d="M130 128 L200 70 A80 80 0 0 1 160 40 Z" fill="#ffc166" opacity=".35"/>
-<path d="M130 128 L190 180 A80 80 0 0 1 150 210 Z" fill="#ff7a18" opacity=".35"/>
-<path d="M130 128 L70 180 A80 80 0 0 1 50 140 Z" fill="#ffd9a0" opacity=".25"/>
+<!-- Subtle highlight -->
+<path d="M130 128 L75 62 A80 80 0 0 1 130 50 Z" fill="#ffffff" opacity=".18"/>
 
 <!-- Hub -->
-<circle cx="130" cy="128" r="36" fill="#2c2f34"/>
-<circle cx="130" cy="128" r="24" fill="#9aa0a6"/>
-<circle cx="130" cy="128" r="10" fill="#1b1e22"/>
+<circle cx="130" cy="128" r="34" fill="#5a2e10"/>
+<circle cx="130" cy="128" r="22" fill="#c8927a"/>
+<circle cx="130" cy="128" r="9" fill="#2a1408"/>
 
-<!-- Snowflake (white, always visible against the dark disc) -->
-<g transform="translate(214.64,169.4)" stroke="#ffffff" stroke-width="4" stroke-linecap="round" fill="none">
+<!-- Snowflake — bright white, bold strokes for visibility at small sizes -->
+<g transform="translate(214.64,169.4)" stroke="#ffffff" stroke-width="5.5" stroke-linecap="round" fill="none">
   <line x1="0" y1="0" x2="29" y2="0"/>
   <line x1="15.95" y1="0" x2="22.98" y2="-4.06"/>
   <line x1="15.95" y1="0" x2="22.98" y2="4.06"/>
@@ -43,11 +40,11 @@
   <line x1="7.975" y1="-13.81" x2="15.007" y2="-17.87"/>
 </g>
 <g transform="translate(214.64,169.4)" fill="#ffffff">
-  <circle cx="29" cy="0" r="4.8"/>
-  <circle cx="14.5" cy="25.11" r="4.8"/>
-  <circle cx="-14.5" cy="25.11" r="4.8"/>
-  <circle cx="-29" cy="0" r="4.8"/>
-  <circle cx="-14.5" cy="-25.11" r="4.8"/>
-  <circle cx="14.5" cy="-25.11" r="4.8"/>
+  <circle cx="29" cy="0" r="5.5"/>
+  <circle cx="14.5" cy="25.11" r="5.5"/>
+  <circle cx="-14.5" cy="25.11" r="5.5"/>
+  <circle cx="-29" cy="0" r="5.5"/>
+  <circle cx="-14.5" cy="-25.11" r="5.5"/>
+  <circle cx="14.5" cy="-25.11" r="5.5"/>
 </g>
 </svg>
