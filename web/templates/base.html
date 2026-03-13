@@ -4,6 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block title %}fsbackup{% endblock %}</title>
+  <link rel="icon" href="/static/favicon.ico" sizes="any"/>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml"/>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
   <script>
@@ -52,9 +54,12 @@
   <!-- Sidebar -->
   <aside class="w-56 shrink-0 bg-white dark:bg-zinc-900 border-r border-zinc-200 dark:border-zinc-800 flex flex-col">
     <div class="px-5 py-5 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between">
-      <div>
-        <span class="text-base font-bold tracking-tight text-zinc-900 dark:text-white">fsbackup</span>
-        <span class="block text-xs text-zinc-400 mt-0.5">backup manager</span>
+      <div class="flex items-center gap-2.5">
+        <img src="/static/icon.svg" alt="" class="h-7 w-7 rounded-lg shrink-0"/>
+        <div>
+          <span class="text-base font-bold tracking-tight text-zinc-900 dark:text-white">fsbackup</span>
+          <span class="block text-xs text-zinc-400 mt-0.5">backup manager</span>
+        </div>
       </div>
       <!-- Light/dark toggle -->
       <button id="theme-toggle" onclick="toggleTheme()"
