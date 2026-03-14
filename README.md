@@ -2,6 +2,8 @@
 
 fsbackup is a pull-based snapshot backup system for home lab Linux servers. The backup host connects outbound over SSH to each source host, pulls data with rsync, and stores point-in-time snapshots organized by date and tier. Snapshots are mirrored to a second local drive and optionally exported to encrypted offsite archives in S3. A [browser-based web UI](#web-ui) provides monitoring, snapshot browsing, and restore — including an S3 bucket browser.
 
+fsbackup runs as a Docker container (supercronic scheduler + FastAPI web UI). See [Docker deployment](docs/docker.md) for setup instructions.
+
 ---
 
 ## Features
@@ -39,15 +41,14 @@ fsbackup is designed around the [3-2-1 backup rule](https://www.backblaze.com/bl
 - [Repository layout](#repository-layout)
 - [Data classes](#data-classes)
 - [Snapshot layout](#snapshot-layout)
-- [Scripts — automated](#scripts--automated-run-by-systemd-timers)
+- [Scripts — automated](#scripts--automated-run-by-supercronic)
 - [Scripts — manual use](#scripts--manual-use-administrative-utilities)
 - [Remote scripts](#remote-scripts)
 - [S3 cloud export](#s3-cloud-export)
-- [Daily timer schedule](#daily-timer-schedule)
+- [Daily schedule](#daily-schedule)
 - [Prometheus metrics](#prometheus-metrics)
 - [Restore](#restore)
 - [Restore from S3](#restore-from-s3)
-- [Deploying systemd unit changes](#deploying-systemd-unit-changes)
 - [Further reading](#further-reading)
 
 ---
@@ -93,12 +94,14 @@ fsbackup includes a browser-based UI for monitoring backup status, browsing snap
 ## Repository layout
 
 ```
-bin/        Scripts run automatically by systemd timers
+bin/        Scripts run automatically by supercronic (scheduler inside the container)
+docker/     Docker entrypoint script
 utils/      Manual-use administrative tools
 remote/     Scripts that run ON source hosts (not the backup server)
-s3/         S3 cloud export (in development)
-systemd/    Systemd unit files — source of truth for all timers and services
+s3/         S3 cloud export
+systemd/    Systemd unit files (reference only — not used in Docker deployment)
 conf/       Configuration templates and examples
+web/        FastAPI + HTMX web UI
 docs/       Detailed documentation
 ```
 
@@ -140,23 +143,23 @@ Snapshots are stored under `/backup/snapshots/` and mirrored to `/backup2/snapsh
 
 ---
 
-## Scripts — automated (run by systemd timers)
+## Scripts — automated (run by supercronic)
 
-These scripts are called by systemd on a schedule. You generally don't run them by hand, though you can pass `--dry-run` to test without making changes.
+These scripts are called by supercronic on a schedule. You generally don't run them by hand, though you can pass `--dry-run` to test without making changes. To run manually: `docker exec -it fsbackup /opt/fsbackup/bin/<script> ...`
 
 Repository path: **bin/**
 
 | Filename | Name | Description |
 |----------|------|-------------|
-| `fs-runner.sh` | Take a snapshot | Connects to each target over SSH and rsyncs a new snapshot. Unchanged files are hardlinked to the previous snapshot. Writes Prometheus metrics. Called by `fsbackup-runner@<class>.timer`. |
-| `fs-doctor.sh` | Health check | Checks SSH connectivity, source paths, and snapshot directories. Reports orphaned targets and verifies snapshot immutability. Called by `fsbackup-doctor@<class>.timer`. |
-| `fs-promote.sh` | Promote snapshots | Promotes qualifying daily snapshots to weekly and weekly to monthly. Runs nightly after the backup cycle. Called by `fsbackup-promote.timer`. |
-| `fs-annual-promote.sh` | Annual promotion | Promotes the prior December monthly snapshot to the `annual/` tier (class1 only). Runs January 5th. Called by `fsbackup-annual-promote.timer`. |
-| `fs-retention.sh` | Prune old snapshots | Deletes snapshots past retention limits on primary storage (14d daily / 8w weekly / 12m monthly). Called by `fsbackup-retention.timer`. |
-| `fs-mirror.sh` | Sync to mirror drive | Rsyncs primary snapshots to the secondary drive. Runs in `daily` or `promote` mode. Skips classes in `MIRROR_SKIP_CLASSES`. Called by `fsbackup-mirror-daily.timer` and `fsbackup-mirror-promote.timer`. |
-| `fs-mirror-retention.sh` | Prune mirror snapshots | Prunes old snapshots on the mirror drive (14d / 12w / 24m). Called by `fsbackup-mirror-retention.timer`. |
-| `fs-db-export.sh` | Export databases | Dumps databases to an export directory so the runner captures a consistent snapshot instead of live files. Called by `fs-db-export@<app>.timer`. |
-| `fs-logrotate-metric.sh` | Logrotate health metric | Checks that logrotate ran and writes a Prometheus metric for alerting. Called by `fsbackup-logrotate-metric.timer`. |
+| `fs-runner.sh` | Take a snapshot | Connects to each target over SSH and rsyncs a new snapshot. Unchanged files are hardlinked to the previous snapshot. Writes Prometheus metrics. |
+| `fs-doctor.sh` | Health check | Checks SSH connectivity, source paths, and snapshot directories. Reports orphaned targets and verifies snapshot immutability. |
+| `fs-promote.sh` | Promote snapshots | Promotes qualifying daily snapshots to weekly and weekly to monthly. Runs nightly after the backup cycle. |
+| `fs-annual-promote.sh` | Annual promotion | Promotes the prior December monthly snapshot to the `annual/` tier (class1 only). Runs January 5th. |
+| `fs-retention.sh` | Prune old snapshots | Deletes snapshots past retention limits on primary storage (14d daily / 8w weekly / 12m monthly). |
+| `fs-mirror.sh` | Sync to mirror drive | Rsyncs primary snapshots to the secondary drive. Runs in `daily` or `promote` mode. Skips classes in `MIRROR_SKIP_CLASSES`. |
+| `fs-mirror-retention.sh` | Prune mirror snapshots | Prunes old snapshots on the mirror drive (14d / 12w / 24m). |
+| `fs-db-export.sh` | Export databases | Dumps databases via `docker exec` to an export directory before backup runs, ensuring a consistent snapshot. Requires Docker socket mount. |
+| `fs-logrotate-metric.sh` | Logrotate health metric | Checks that logrotate ran and writes a Prometheus metric for alerting. |
 
 ---
 
@@ -194,7 +197,7 @@ Repository path: **remote/**
 
 `s3/fs-export-s3.sh` compresses, encrypts, and uploads snapshots to Amazon S3 for offsite storage. Weekly, monthly, and annual snapshots are exported; daily snapshots and class3 are not. Files are encrypted with [age](https://github.com/FiloSottile/age) before upload so S3 never holds readable data. Retention is managed entirely by S3 lifecycle rules — the script never deletes anything.
 
-Called by: `fsbackup-s3-export.timer` (04:30 daily, after mirror-promote)
+Called by: supercronic at 04:30 daily, after mirror-promote.
 
 ### S3 setup
 
@@ -307,7 +310,7 @@ Test it:
 sudo -u fsbackup aws s3 ls s3://fsbackup-snapshots-SUFFIX --profile fsbackup
 ```
 
-**6. Update fsbackup.conf and enable the timer**
+**6. Update fsbackup.conf**
 
 Add to `/etc/fsbackup/fsbackup.conf`:
 
@@ -316,19 +319,11 @@ S3_BUCKET="fsbackup-snapshots-SUFFIX"
 S3_SKIP_CLASSES="class3"
 ```
 
-Then deploy and enable:
-
-```bash
-sudo cp /opt/fsbackup/systemd/fsbackup-s3-export.service \
-        /opt/fsbackup/systemd/fsbackup-s3-export.timer \
-        /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now fsbackup-s3-export.timer
-```
+The S3 export runs automatically via supercronic at 04:30 daily once the container is running.
 
 ---
 
-## Daily timer schedule
+## Daily schedule
 
 | Time | Job |
 |------|-----|
@@ -423,7 +418,7 @@ Written after each S3 export run.
 
 ## Restore
 
-Use `utils/fs-restore.sh` as the `fsbackup` system user or as root.
+Use `utils/fs-restore.sh` via `docker exec` or directly as the `fsbackup` user. Restored files land in `/restore` inside the container, which maps to `/backup/restore` on the host.
 
 ### Browse available snapshots
 
@@ -445,17 +440,17 @@ fs-restore.sh list --type monthly --date 2026-02     --class class1
 ### Restore to a local path
 
 ```bash
-# Restore the most recent daily snapshot to /tmp/restore-nginx
-fs-restore.sh restore \
+# Restore the most recent daily snapshot to /restore/nginx (→ /backup/restore/nginx on host)
+docker exec -it fsbackup /opt/fsbackup/utils/fs-restore.sh restore \
   --type daily --class class2 --id nginx.data \
   --latest \
-  --to /tmp/restore-nginx
+  --to /restore/nginx
 
 # Restore from a specific date
-fs-restore.sh restore \
+docker exec -it fsbackup /opt/fsbackup/utils/fs-restore.sh restore \
   --type weekly --class class2 --id ns1.bind.named.conf \
   --date 2026-W09 \
-  --to /tmp/restore-bind
+  --to /restore/bind
 ```
 
 ### Restore directly to a remote host
@@ -464,13 +459,13 @@ The script rsyncs the snapshot to `backup@<host>:<path>` over SSH using the same
 
 ```bash
 # Restore bind config to ns1 at a staging path
-fs-restore.sh restore \
+docker exec -it fsbackup /opt/fsbackup/utils/fs-restore.sh restore \
   --type daily --class class2 --id ns1.bind.named.conf \
   --latest \
   --to-host ns1 --to-path /tmp/restore-bind
 
 # Restore from a specific weekly snapshot to ns2
-fs-restore.sh restore \
+docker exec -it fsbackup /opt/fsbackup/utils/fs-restore.sh restore \
   --type weekly --class class2 --id ns2.bind.named.conf \
   --date 2026-W09 \
   --to-host ns2 --to-path /tmp/restore-bind
@@ -565,19 +560,9 @@ annual/class1/homeassistant.db/homeassistant.db--2025.tar.zst.age
 
 ---
 
-## Deploying systemd unit changes
-
-The `systemd/` directory is the source of truth. After editing unit files:
-
-```bash
-sudo cp /opt/fsbackup/systemd/*.service /opt/fsbackup/systemd/*.timer /etc/systemd/system/
-sudo systemctl daemon-reload
-```
-
----
-
 ## Further reading
 
+- [Docker deployment](docs/docker.md)
 - [Installation](docs/installation.md)
 - [Adding hosts and targets](docs/adding-hosts-and-targets.md)
 - [Operations guide](docs/operations.md)
