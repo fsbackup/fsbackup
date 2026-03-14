@@ -30,5 +30,5 @@ fsbackup_logrotate_ok ${ok}
 fsbackup_logrotate_last_run_seconds ${last_run_epoch}
 EOF
 
-chgrp nodeexp_txt "$OUT"
+chgrp nodeexp_txt "$OUT" 2>/dev/null || true
 chmod 0644 "$OUT"

@@ -254,8 +254,8 @@ echo "fsbackup_runner_run_scope{class=\"${CLASS}\"} ${RUN_SCOPE_FULL}" >>"$PROM_
 # Write atomically
 # -----------------------------------------------------------------------------
 
-chgrp nodeexp_txt "$PROM_TMP"
-chmod 0640 "$PROM_TMP"
+chgrp nodeexp_txt "$PROM_TMP" 2>/dev/null || true
+chmod 0644 "$PROM_TMP"
 mv "$PROM_TMP" "$PROM_FILE"
 
 # -----------------------------------------------------------------------------

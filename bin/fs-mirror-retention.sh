@@ -240,7 +240,7 @@ fsbackup_mirror_retention_deleted_bytes_total{tier="monthly"} ${deleted_bytes_mo
 EOF
 
 chgrp nodeexp_txt "$PROM_TMP" 2>/dev/null || true
-chmod 0640 "$PROM_TMP" 2>/dev/null || true
+chmod 0644 "$PROM_TMP" 2>/dev/null || true
 mv "$PROM_TMP" "$PROM_OUT" 2>/dev/null || rm -f "$PROM_TMP"
 
 log "Mirror retention completed (rc=${rc}, duration=${DURATION}s)"

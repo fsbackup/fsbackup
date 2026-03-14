@@ -73,7 +73,7 @@ fsbackup_annual_promote_skipped{year="${YEAR}",reason="missing_source"} 1
 fsbackup_annual_promote_last_run ${NOW_EPOCH}
 EOF
 
-  chgrp nodeexp_txt "$PROM_TMP"
+  chgrp nodeexp_txt "$PROM_TMP" 2>/dev/null || true
   chmod 0644 "$PROM_TMP"
   mv "$PROM_TMP" "$PROM_OUT"
   exit 0
@@ -88,7 +88,7 @@ fsbackup_annual_promote_skipped{year="${YEAR}",reason="already_exists"} 1
 fsbackup_annual_promote_last_run ${NOW_EPOCH}
 EOF
 
-  chgrp nodeexp_txt "$PROM_TMP"
+  chgrp nodeexp_txt "$PROM_TMP" 2>/dev/null || true
   chmod 0644 "$PROM_TMP"
   mv "$PROM_TMP" "$PROM_OUT"
   exit 0
@@ -120,7 +120,7 @@ fsbackup_annual_snapshot_bytes{year="${YEAR}"} ${BYTES}
 fsbackup_annual_promote_last_run ${NOW_EPOCH}
 EOF
 
-chgrp nodeexp_txt "$PROM_TMP"
+chgrp nodeexp_txt "$PROM_TMP" 2>/dev/null || true
 chmod 0644 "$PROM_TMP"
 mv "$PROM_TMP" "$PROM_OUT"
 

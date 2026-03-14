@@ -114,7 +114,7 @@ fsbackup_db_export_size_bytes{db="${DB_NAME}",engine="${DB_ENGINE}",host="${HOST
 EOF
 
 chmod 0644 "$tmp" 2>/dev/null || true
-chown "$BACKUP_USER":nodeexp_txt "$tmp"
+chown "$BACKUP_USER":nodeexp_txt "$tmp" 2>/dev/null || true
 mv "$tmp" "$METRICS_FILE"
 
 # ------------------------------------------------------------------

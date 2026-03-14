@@ -91,7 +91,7 @@ fsbackup_promote_monthly_classes_promoted $PROMOTED_MONTHLY
 fsbackup_promote_failures $FAIL
 EOF
 
-chgrp nodeexp_txt "$METRIC_FILE"
+chgrp nodeexp_txt "$METRIC_FILE" 2>/dev/null || true
 chmod 0644 "$METRIC_FILE" 2>/dev/null || true
 
 exit 0
