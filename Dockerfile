@@ -40,8 +40,10 @@ RUN curl -fsSL \
       | tar -xz -C /usr/local/bin --strip-components=1 age/age
 
 # ── fsbackup user + directories ───────────────────────────────────────────────
-RUN groupadd -r fsbackup \
-    && useradd -r -g fsbackup -d /var/lib/fsbackup -s /bin/bash fsbackup \
+# UID/GID 993 matches the fsbackup system user on the host — required so the
+# container can read/write the bind-mounted directories without permission errors.
+RUN groupadd -r --gid 993 fsbackup \
+    && useradd -r --uid 993 -g fsbackup -d /var/lib/fsbackup -s /bin/bash fsbackup \
     && mkdir -p \
         /var/lib/fsbackup/log \
         /var/lib/fsbackup/.ssh \

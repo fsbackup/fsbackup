@@ -3,6 +3,7 @@ services:
     build: .
     image: fsbackup:latest
     restart: unless-stopped
+    user: "993:993"
     ports:
       - "8080:8080"
     env_file:
