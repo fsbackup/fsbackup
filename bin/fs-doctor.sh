@@ -152,7 +152,7 @@ cat >"$tmp" <<EOF
 fsbackup_orphan_snapshots_total{root="primary"} ${ORPHANS[primary]}
 fsbackup_orphan_snapshots_total{root="mirror"} ${ORPHANS[mirror]}
 EOF
-chgrp nodeexp_txt "$tmp"
+chgrp nodeexp_txt "$tmp" 2>/dev/null || true
 chmod 0644 "$tmp"
 mv "$tmp" "$ORPHAN_METRIC"
 
@@ -190,7 +190,7 @@ cat >"$tmp" <<EOF
 fsbackup_annual_immutable{root="primary"} ${PRIMARY_IMMUTABLE}
 fsbackup_annual_immutable{root="mirror"} ${MIRROR_IMMUTABLE}
 EOF
-chgrp nodeexp_txt "$tmp"
+chgrp nodeexp_txt "$tmp" 2>/dev/null || true
 chmod 0644 "$tmp"
 mv "$tmp" "$IMMUTABLE_METRIC"
 
@@ -203,7 +203,7 @@ cat >"$tmp" <<EOF
 # TYPE fsbackup_doctor_duration_seconds gauge
 fsbackup_doctor_duration_seconds{class="$CLASS"} ${DURATION}
 EOF
-chgrp nodeexp_txt "$tmp"
+chgrp nodeexp_txt "$tmp" 2>/dev/null || true
 chmod 0644 "$tmp"
 mv "$tmp" "${NODEEXP_DIR}/fsbackup_doctor_duration.prom"
 

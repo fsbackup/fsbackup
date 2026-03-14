@@ -168,8 +168,8 @@ fsbackup_s3_bytes_total ${BYTES_TOTAL}
 fsbackup_s3_duration_seconds ${DURATION}
 EOF
 
-chgrp nodeexp_txt "$PROM_TMP"
-chmod 0640 "$PROM_TMP"
+chgrp nodeexp_txt "$PROM_TMP" 2>/dev/null || true
+chmod 0644 "$PROM_TMP"
 mv "$PROM_TMP" "$PROM_OUT"
 
 log "S3 export complete: uploaded=${UPLOADED} skipped=${SKIPPED} failed=${FAILED} bytes=${BYTES_TOTAL} duration=${DURATION}s"

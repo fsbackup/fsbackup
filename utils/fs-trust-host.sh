@@ -21,12 +21,15 @@ METRIC_FILE="$METRICS_DIR/fsbackup_ssh_hostkeys.prom"
 GROUP_NODEEXP="nodeexp_txt"
 
 [[ -n "$HOST" ]] || { echo "Usage: fs-trust-host.sh <hostname>" >&2; exit 2; }
-[[ $EUID -eq 0 ]] || { echo "ERROR: must be run as root" >&2; exit 1; }
+[[ $EUID -eq 0 || "$(id -un)" == "$FSBACKUP_USER" ]] \
+  || { echo "ERROR: must be run as root or $FSBACKUP_USER" >&2; exit 1; }
 
 mkdir -p "$SSH_DIR"
 touch "$KNOWN_HOSTS"
 
-chown -R "$FSBACKUP_USER:$FSBACKUP_USER" "$SSH_DIR"
+if [[ $EUID -eq 0 ]]; then
+  chown -R "$FSBACKUP_USER:$FSBACKUP_USER" "$SSH_DIR"
+fi
 chmod 700 "$SSH_DIR"
 chmod 600 "$KNOWN_HOSTS"
 
@@ -71,7 +74,9 @@ cat >"$tmp" <<EOF
 fsbackup_ssh_host_key_present{host="$HOST",fingerprint="$FP"} 1
 EOF
 
-chown "$FSBACKUP_USER:$GROUP_NODEEXP" "$tmp"
+if [[ $EUID -eq 0 ]]; then
+  chown "$FSBACKUP_USER:$GROUP_NODEEXP" "$tmp"
+fi
 chmod 0644 "$tmp" 2>/dev/null || true
 mv "$tmp" "$METRIC_FILE"
 

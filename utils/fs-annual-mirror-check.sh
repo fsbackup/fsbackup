@@ -27,6 +27,6 @@ cat >"$PROM_OUT" <<EOF
 fsbackup_annual_mirror_in_sync ${ok}
 EOF
 
-chgrp nodeexp_txt "$PROM_OUT"
+chgrp nodeexp_txt "$PROM_OUT" 2>/dev/null || true
 chmod 0644 "$PROM_OUT"
 

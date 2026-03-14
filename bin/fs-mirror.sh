@@ -148,8 +148,8 @@ fsbackup_mirror_bytes_total{mode="${MODE}"} ${BYTES_TOTAL}
 fsbackup_mirror_duration_seconds{mode="${MODE}"} ${DURATION}
 EOF
 
-chgrp nodeexp_txt "$PROM_TMP"
-chmod 0640 "$PROM_TMP"
+chgrp nodeexp_txt "$PROM_TMP" 2>/dev/null || true
+chmod 0644 "$PROM_TMP"
 mv "$PROM_TMP" "$PROM_OUT"
 
 log "Mirror completed (rc=${rc}, duration=${DURATION}s, bytes=${BYTES_TOTAL})"
