@@ -3,6 +3,8 @@
 Day-to-day management: checking health, running jobs manually, managing orphans, and
 verifying the mirror.
 
+All scripts run inside the Docker container. The examples below use `docker exec`. Replace `fsbackup` with your container name if different.
+
 ---
 
 ## Checking system health
@@ -13,9 +15,9 @@ The doctor checks SSH reachability and source path existence for all targets in 
 It also scans for orphaned snapshots and verifies annual snapshot immutability.
 
 ```bash
-sudo -u fsbackup /opt/fsbackup/bin/fs-doctor.sh --class class1
-sudo -u fsbackup /opt/fsbackup/bin/fs-doctor.sh --class class2
-sudo -u fsbackup /opt/fsbackup/bin/fs-doctor.sh --class class3
+docker exec -it fsbackup /opt/fsbackup/bin/fs-doctor.sh --class class1
+docker exec -it fsbackup /opt/fsbackup/bin/fs-doctor.sh --class class2
+docker exec -it fsbackup /opt/fsbackup/bin/fs-doctor.sh --class class3
 ```
 
 Output:
@@ -54,12 +56,17 @@ tail -f /var/lib/fsbackup/log/annual-promote.log
 cat /var/lib/fsbackup/log/fs-orphans.log
 ```
 
-### Systemd unit status
+### Container and scheduler status
 
 ```bash
-systemctl status fsbackup-runner@class1.service
-systemctl status fsbackup-mirror-daily.service
-journalctl -u fsbackup-runner@class1.service --since today
+# Check container is running
+docker ps | grep fsbackup
+
+# Follow all output from the container (supercronic + uvicorn)
+docker logs -f fsbackup
+
+# Check supercronic job output
+docker exec -it fsbackup tail -f /var/lib/fsbackup/log/backup.log
 ```
 
 ---
@@ -69,19 +76,19 @@ journalctl -u fsbackup-runner@class1.service --since today
 ### Dry-run a snapshot (safe, no changes)
 
 ```bash
-sudo -u fsbackup /opt/fsbackup/bin/fs-runner.sh daily --class class1 --dry-run
+docker exec -it fsbackup /opt/fsbackup/bin/fs-runner.sh daily --class class1 --dry-run
 ```
 
 ### Run a snapshot for real
 
 ```bash
-sudo -u fsbackup /opt/fsbackup/bin/fs-runner.sh daily --class class1
+docker exec -it fsbackup /opt/fsbackup/bin/fs-runner.sh daily --class class1
 ```
 
 ### Run a single target only
 
 ```bash
-sudo -u fsbackup /opt/fsbackup/bin/fs-runner.sh daily --class class1 --target mosquitto.data
+docker exec -it fsbackup /opt/fsbackup/bin/fs-runner.sh daily --class class1 --target mosquitto.data
 ```
 
 When `--target` is used, the Prometheus metrics file is updated only for that target.
@@ -94,14 +101,14 @@ By default the runner uses `--ignore-existing` to avoid re-transferring unchange
 To force a full re-sync of an existing snapshot:
 
 ```bash
-sudo -u fsbackup /opt/fsbackup/bin/fs-runner.sh daily --class class1 \
+docker exec -it fsbackup /opt/fsbackup/bin/fs-runner.sh daily --class class1 \
   --target mosquitto.data --replace-existing
 ```
 
 ### Run promotion manually
 
 ```bash
-sudo /opt/fsbackup/bin/fs-promote.sh
+docker exec -it fsbackup /opt/fsbackup/bin/fs-promote.sh
 ```
 
 Promotion only acts on `DOW=1` (Monday) for weekly and `DOM=01` for monthly. To test
@@ -110,24 +117,24 @@ outside those days the script will run but skip promotion — check the log.
 ### Run annual promotion manually
 
 ```bash
-sudo /opt/fsbackup/bin/fs-annual-promote.sh --dry-run
-sudo /opt/fsbackup/bin/fs-annual-promote.sh
+docker exec -it fsbackup /opt/fsbackup/bin/fs-annual-promote.sh --dry-run
+docker exec -it fsbackup /opt/fsbackup/bin/fs-annual-promote.sh
 # or for a specific year:
-sudo /opt/fsbackup/bin/fs-annual-promote.sh --year 2025
+docker exec -it fsbackup /opt/fsbackup/bin/fs-annual-promote.sh --year 2025
 ```
 
 ### Run retention manually
 
 ```bash
-sudo /opt/fsbackup/bin/fs-retention.sh
-sudo /opt/fsbackup/bin/fs-mirror-retention.sh
+docker exec -it fsbackup /opt/fsbackup/bin/fs-retention.sh
+docker exec -it fsbackup /opt/fsbackup/bin/fs-mirror-retention.sh
 ```
 
 ### Run mirror manually
 
 ```bash
-sudo /opt/fsbackup/bin/fs-mirror.sh daily
-sudo /opt/fsbackup/bin/fs-mirror.sh promote
+docker exec -it fsbackup /opt/fsbackup/bin/fs-mirror.sh daily
+docker exec -it fsbackup /opt/fsbackup/bin/fs-mirror.sh promote
 ```
 
 ---
@@ -197,7 +204,7 @@ diff -rq \
 ### Manual mirror check for annual snapshots
 
 ```bash
-sudo /opt/fsbackup/utils/fs-annual-mirror-check.sh
+docker exec -it fsbackup /opt/fsbackup/utils/fs-annual-mirror-check.sh
 ```
 
 ---
@@ -227,7 +234,7 @@ tracked in the Prometheus metric `fsbackup_runner_target_failures_total`.
 To re-run immediately for a specific target:
 
 ```bash
-sudo -u fsbackup /opt/fsbackup/bin/fs-runner.sh daily --class class1 --target <id>
+docker exec -it fsbackup /opt/fsbackup/bin/fs-runner.sh daily --class class1 --target <id>
 ```
 
 ---
@@ -248,8 +255,8 @@ Common causes:
   that is a kernel FIB routing bug (see below).
 - **SSH host key mismatch** — the target host was rebuilt. Re-trust the key:
   ```bash
-  sudo -u fsbackup ssh-keygen -R <hostname> -f /var/lib/fsbackup/.ssh/known_hosts
-  sudo /opt/fsbackup/utils/fs-trust-host.sh <hostname>
+  ssh-keygen -R <hostname> -f /var/lib/fsbackup/.ssh/known_hosts
+  docker exec -it fsbackup /opt/fsbackup/utils/fs-trust-host.sh <hostname>
   ```
 - **SSH auth failure** — the `backup` user on the remote host does not have the correct
   authorized key. Re-run `fsbackup_remote_init.sh` on the remote host.

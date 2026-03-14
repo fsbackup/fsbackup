@@ -1,41 +1,41 @@
 # Installation — fsbackup backup server
 
-This document covers setting up the fsbackup system on the primary backup host (`fs`).
+This document covers setting up the fsbackup system on the primary backup host.
 For adding new source hosts, see [adding-hosts-and-targets.md](adding-hosts-and-targets.md).
+
+fsbackup runs as a Docker container. See [docker.md](docker.md) for the full Docker deployment guide. The steps below cover the one-time host preparation that Docker deployment requires.
 
 ---
 
 ## Prerequisites
 
 - Ubuntu/Debian Linux
+- Docker Engine + Docker Compose v2
 - Dedicated backup drive(s) mounted (e.g. `/backup`, `/backup2`)
-- Packages: `rsync`, `ssh`, `acl`, `yq`, `jq`
-- `node_exporter` with textfile collector (optional, for metrics)
-
-```bash
-apt install rsync openssh-client acl yq jq
-```
+- `node_exporter` with textfile collector (optional, for Prometheus metrics)
 
 ---
 
 ## 1. Clone the repository
 
 ```bash
-git clone <repo-url> /opt/fsbackup
-cd /opt/fsbackup
+git clone <repo-url> /home/<user>/fsbackup
 ```
 
-All scripts run directly from `/opt/fsbackup/bin/`. Nothing is copied to `/usr/local/sbin`.
+The repo is used for building the Docker image and as a reference. Scripts run from inside the container at `/opt/fsbackup/`.
 
 ---
 
 ## 2. Create the fsbackup system user
 
 ```bash
-useradd -r -m -d /var/lib/fsbackup -s /bin/bash fsbackup
+sudo useradd -r --uid 993 -g $(getent group | awk -F: '$3==993{print $1}' || echo fsbackup) \
+  -d /var/lib/fsbackup -s /bin/bash fsbackup 2>/dev/null || \
+sudo useradd -r -m -d /var/lib/fsbackup -s /bin/bash fsbackup
+sudo usermod -u 993 fsbackup
 ```
 
-This user runs all backup scripts via systemd. It must own its home directory and SSH key.
+The UID **must be 993** to match the user baked into the Docker image. The container runs as `user: "993:993"` and needs matching ownership on bind-mounted directories.
 
 ---
 
@@ -123,51 +123,39 @@ The web UI `install.sh` calls this automatically when the web user differs from 
 
 ---
 
-## 8. Deploy systemd units
+## 8. Deploy the Docker stack
 
-The `systemd/` directory in the repo is the source of truth for all unit files.
+See [docker.md](docker.md) for the full stack compose setup, volume configuration, and first-run steps.
 
-```bash
-sudo cp /opt/fsbackup/systemd/*.service /opt/fsbackup/systemd/*.timer /etc/systemd/system/
-sudo systemctl daemon-reload
-```
-
-Enable and start timers:
+Quick start:
 
 ```bash
-sudo systemctl enable --now \
-  fsbackup-doctor@class1.timer \
-  fsbackup-runner@class1.timer \
-  fsbackup-doctor@class2.timer \
-  fsbackup-runner@class2.timer \
-  fsbackup-doctor@class3.timer \
-  fsbackup-runner@class3.timer \
-  fsbackup-promote.timer \
-  fsbackup-mirror-daily.timer \
-  fsbackup-mirror-promote.timer \
-  fsbackup-retention.timer \
-  fsbackup-mirror-retention.timer \
-  fsbackup-annual-promote.timer
+mkdir -p /docker/stacks/fsbackup
+cp /home/<user>/fsbackup/conf/docker-compose.yml.example /docker/stacks/fsbackup/docker-compose.yml
+# Edit docker-compose.yml — set image tag, ports, volumes, extra_hosts
+cd /docker/stacks/fsbackup
+docker compose up -d
 ```
 
 ---
 
-## 9. Trust the local host SSH key
+## 9. Trust remote host SSH keys
 
-For local (`host: fs`) targets, rsync runs directly without SSH. No key trust needed.
+For each remote host that fsbackup will pull from:
 
-For any remote hosts, see [adding-hosts-and-targets.md](adding-hosts-and-targets.md).
+```bash
+docker exec -it fsbackup /opt/fsbackup/utils/fs-trust-host.sh <hostname>
+```
+
+For local (`host: localhost`) targets, no key trust is needed — rsync accesses paths directly via bind mounts.
 
 ---
 
 ## 10. Verify
 
-Run the doctor against each class to confirm all targets are reachable:
-
 ```bash
-sudo -u fsbackup /opt/fsbackup/bin/fs-doctor.sh --class class1
-sudo -u fsbackup /opt/fsbackup/bin/fs-doctor.sh --class class2
-sudo -u fsbackup /opt/fsbackup/bin/fs-doctor.sh --class class3
+docker exec -it fsbackup /opt/fsbackup/bin/fs-doctor.sh --class class1
+docker exec -it fsbackup /opt/fsbackup/bin/fs-doctor.sh --class class2
 ```
 
 All targets should report `OK`. Fix any `FAIL` entries before running the runner.
@@ -177,6 +165,6 @@ All targets should report `OK`. Fix any `FAIL` entries before running the runner
 ## 11. Run a first snapshot
 
 ```bash
-sudo -u fsbackup /opt/fsbackup/bin/fs-runner.sh daily --class class1 --dry-run
-sudo -u fsbackup /opt/fsbackup/bin/fs-runner.sh daily --class class1
+docker exec -it fsbackup /opt/fsbackup/bin/fs-runner.sh daily --class class1 --dry-run
+docker exec -it fsbackup /opt/fsbackup/bin/fs-runner.sh daily --class class1
 ```
