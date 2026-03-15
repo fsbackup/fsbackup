@@ -159,7 +159,6 @@ Repository path: **bin/**
 | `fs-mirror.sh` | Sync to mirror drive | Rsyncs primary snapshots to the secondary drive. Runs in `daily` or `promote` mode. Skips classes in `MIRROR_SKIP_CLASSES`. |
 | `fs-mirror-retention.sh` | Prune mirror snapshots | Prunes old snapshots on the mirror drive (14d / 12w / 24m). |
 | `fs-db-export.sh` | Export databases | Dumps databases via `docker exec` to an export directory before backup runs, ensuring a consistent snapshot. Requires Docker socket mount. |
-| `fs-logrotate-metric.sh` | Logrotate health metric | Checks that logrotate ran and writes a Prometheus metric for alerting. |
 
 ---
 
@@ -406,13 +405,6 @@ Written after each S3 export run.
 | `fsbackup_s3_duration_seconds` | — | Duration of the S3 export run in seconds |
 | `fsbackup_s3_target_last_upload` | `tier`, `class`, `target` | Unix timestamp of the last successful S3 upload for this target |
 | `fsbackup_s3_target_last_failure` | `tier`, `class`, `target` | Unix timestamp of the last S3 upload failure for this target |
-
-### Logrotate health (`fs-logrotate-metric.sh`)
-
-| Metric | Labels | Description |
-|--------|--------|-------------|
-| `fsbackup_logrotate_ok` | — | 1 if the fsbackup logrotate config validates cleanly, 0 if there is an error |
-| `fsbackup_logrotate_last_run_seconds` | — | Unix timestamp of the last logrotate health check |
 
 ---
 

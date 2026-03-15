@@ -170,13 +170,6 @@ node_exporter scrape and exposed to Prometheus without any additional configurat
 | `fsbackup_db_export_last_timestamp{db,engine,host}` | Unix timestamp of last successful export |
 | `fsbackup_db_export_size_bytes{db,engine,host}` | Compressed size of the export file in bytes |
 
-**Logrotate metric** (`fsbackup_logrotate.prom`):
-
-| Metric | Description |
-|--------|-------------|
-| `fsbackup_logrotate_ok` | 1 if logrotate ran cleanly on last check, 0 if it errored |
-| `fsbackup_logrotate_last_run_seconds` | Unix timestamp of last logrotate check |
-
 **S3 export metrics** (`fsbackup_s3_export.prom`):
 
 | Metric | Description |

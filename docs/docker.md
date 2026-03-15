@@ -300,7 +300,6 @@ The default schedule (`conf/fsbackup.crontab`):
 
 | Time | Job |
 |------|-----|
-| 00:30 daily | `fs-logrotate-metric.sh` |
 | 01:15 daily | `fs-doctor.sh --class class1` |
 | 01:40 daily | `fs-db-export.sh` (paperlessngx) |
 | 01:45 daily | `fs-runner.sh daily --class class1` |
