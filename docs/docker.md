@@ -138,7 +138,7 @@ A minimal working stack:
 services:
   fsbackup:
     container_name: fsbackup
-    image: registry.kluhsman.com/fsbackup:v0.9.1
+    image: ghcr.io/fsbackup/fsbackup:0.9.1
     restart: unless-stopped
 
     # Must match the fsbackup user on the host.
@@ -354,19 +354,19 @@ Logs are written to `/var/lib/fsbackup/log/` (bind-mounted from host) and viewab
 
 ## Building and Pushing the Image
 
+Images are published automatically to `ghcr.io/fsbackup/fsbackup` via GitHub Actions
+when a version tag is pushed. To pull the latest release:
+
 ```bash
-cd /home/crash/fsbackup   # or /opt/fsbackup
-
-docker build \
-  -t registry.kluhsman.com/fsbackup:vX.Y.Z \
-  -t registry.kluhsman.com/fsbackup:latest \
-  .
-
-docker push registry.kluhsman.com/fsbackup:vX.Y.Z
-docker push registry.kluhsman.com/fsbackup:latest
+docker pull ghcr.io/fsbackup/fsbackup:latest
 ```
 
-The image is built from repo root. Replace `vX.Y.Z` with the release tag (e.g. `v0.9.2`).
+To build locally from source:
+
+```bash
+cd /home/<user>/fsbackup
+docker build -t fsbackup:latest .
+```
 
 ---
 
