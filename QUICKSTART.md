@@ -1,41 +1,66 @@
 # fsbackup – Quick Start
 
-This guide gets a new environment backing up in ~10 minutes.
+This guide gets a new environment backing up in under 15 minutes.
+For full details see [docs/installation.md](docs/installation.md) and [docs/docker.md](docs/docker.md).
 
 ---
 
-## 1. Clone repository
+## Prerequisites
+
+- Ubuntu/Debian Linux
+- Dedicated backup drive(s) mounted (e.g. `/backup`, `/backup2`)
+- `node_exporter` with textfile collector (optional, for Prometheus metrics)
+- **Docker deployment:** Docker Engine + Docker Compose v2
+- **Bare-metal deployment:** `rsync`, `openssh-client`
+
+---
+
+## 1. Clone the repository
 
 ```bash
-git clone <internal-repo-url> fsbackup
-cd fsbackup
+git clone https://github.com/fsbackup/fsbackup /home/<user>/fsbackup
 ```
 
 ---
 
-## 2. Bootstrap backup host
+## 2. Create the fsbackup system user
 
 ```bash
-sudo ./bin/fsbackup_bootstrap.sh
+sudo useradd -r -m --uid 993 -d /var/lib/fsbackup -s /bin/bash fsbackup
 ```
 
-Creates:
-- fsbackup user
-- SSH keypair
-- Snapshot directories
-- systemd timers (optional)
+The UID **must be 993** to match the user baked into the Docker image. Use the same UID for bare-metal for consistency.
 
 ---
 
-## 3. Configure targets
-
-Edit:
+## 3. Generate the SSH keypair
 
 ```bash
-/etc/fsbackup/targets.yml
+sudo -u fsbackup ssh-keygen -t ed25519 -f /var/lib/fsbackup/.ssh/id_ed25519_backup -N ""
 ```
 
-Example:
+---
+
+## 4. Create directories
+
+```bash
+sudo mkdir -p /etc/fsbackup/db
+sudo mkdir -p /backup/snapshots/{daily,weekly,monthly,annual}
+sudo mkdir -p /backup2/snapshots/{daily,weekly,monthly,annual}
+sudo chown -R fsbackup:fsbackup /backup/snapshots /backup2/snapshots /var/lib/fsbackup
+```
+
+---
+
+## 5. Configure
+
+```bash
+sudo cp /home/<user>/fsbackup/conf/fsbackup.conf.example /etc/fsbackup/fsbackup.conf
+sudo cp /home/<user>/fsbackup/conf/targets.yml.example /etc/fsbackup/targets.yml
+sudo cp /home/<user>/fsbackup/conf/fsbackup.crontab /etc/fsbackup/fsbackup.crontab
+```
+
+Edit `/etc/fsbackup/targets.yml` to define your backup targets. Example:
 
 ```yaml
 class2:
@@ -47,73 +72,124 @@ class2:
 
 ---
 
-## 4. Initialize remote hosts
+## 6. Initialize remote hosts
 
-On each source host:
+On each source host, run:
 
 ```bash
-sudo ./bin/fsbackup_remote_init.sh
+sudo /home/<user>/fsbackup/remote/fsbackup_remote_init.sh \
+  --pubkey-file /var/lib/fsbackup/.ssh/id_ed25519_backup.pub
 ```
-
-This:
-- Creates backup user
-- Installs SSH key
-- Applies ACLs (read-only)
 
 ---
 
-## 5. Verify with doctor
+## 7a. Deploy with Docker (recommended)
 
 ```bash
-sudo -u fsbackup ./bin/fs-doctor.sh --class class2
+mkdir -p /docker/stacks/fsbackup
+cp /home/<user>/fsbackup/conf/docker-compose.yml.example /docker/stacks/fsbackup/docker-compose.yml
+# Edit docker-compose.yml — set image tag, ports, volumes, extra_hosts
+cd /docker/stacks/fsbackup
+docker compose up -d
 ```
 
-All targets must be OK.
+Trust remote SSH host keys:
+
+```bash
+docker exec -it fsbackup /opt/fsbackup/utils/fs-trust-host.sh <hostname>
+```
+
+See [docs/docker.md](docs/docker.md) for the full stack setup and volume reference.
 
 ---
 
-## 6. Run snapshot
+## 7b. Deploy bare-metal (without Docker)
+
+Copy scripts to the system path:
 
 ```bash
-sudo -u fsbackup ./bin/fs-runner.sh daily --class class2
+sudo cp -r /home/<user>/fsbackup/bin /opt/fsbackup/bin
+sudo cp -r /home/<user>/fsbackup/utils /opt/fsbackup/utils
+sudo cp -r /home/<user>/fsbackup/s3 /opt/fsbackup/s3
+sudo chmod -R 755 /opt/fsbackup
 ```
 
-Snapshots are written under:
+Trust remote SSH host keys:
 
-```text
-/bak/snapshots/class2/daily/
+```bash
+sudo /opt/fsbackup/utils/fs-trust-host.sh <hostname>
 ```
 
+Install systemd units and enable timers:
 
-## Timers
+```bash
+sudo cp /home/<user>/fsbackup/systemd/*.service /etc/systemd/system/
+sudo cp /home/<user>/fsbackup/systemd/*.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now \
+  fsbackup-doctor@class1.timer \
+  fsbackup-doctor@class2.timer \
+  fsbackup-runner@class1.timer \
+  fsbackup-runner@class2.timer \
+  fsbackup-mirror-daily.timer \
+  fsbackup-mirror-promote.timer \
+  fsbackup-retention.timer \
+  fsbackup-mirror-retention.timer \
+  fsbackup-promote.timer \
+  fsbackup-s3-export.timer \
+  fsbackup-annual-promote.timer
+```
 
-Example of timers on FS:
+---
 
-NEXT                                     LEFT LAST                              PASSED UNIT                            ACTIVATES
-Wed 2026-02-04 10:06:19 MST          3min 31s Wed 2026-02-04 09:36:19 MST    26min ago node-patch-status.timer         node-patch-status.service
-Wed 2026-02-04 23:12:48 MST               13h Wed 2026-02-04 10:01:03 MST 1min 44s ago motd-news.timer                 motd-news.service
-Wed 2026-02-04 23:41:30 MST               13h Wed 2026-02-04 10:01:03 MST 1min 44s ago apt-daily.timer                 apt-daily.service
-Thu 2026-02-05 00:00:00 MST               13h Wed 2026-02-04 00:00:00 MST      10h ago dpkg-db-backup.timer            dpkg-db-backup.service
-Thu 2026-02-05 00:00:00 MST               13h -                                      - fsbackup-logrotate-metric.timer fsbackup-logrotate-metric.service
-Thu 2026-02-05 00:00:00 MST               13h Wed 2026-02-04 00:00:00 MST      10h ago logrotate.timer                 logrotate.service
-Thu 2026-02-05 01:15:29 MST               15h Wed 2026-02-04 01:17:21 MST       8h ago fsbackup-doctor@class1.timer    fsbackup-doctor@class1.service
-Thu 2026-02-05 01:42:13 MST               15h Wed 2026-02-04 01:42:21 MST       8h ago fs-db-export@paperlessngx.timer fs-db-export@paperlessngx.service
-Thu 2026-02-05 01:51:32 MST               15h Wed 2026-02-04 01:48:49 MST       8h ago fsbackup-runner@class1.timer    fsbackup-runner@class1.service
-Thu 2026-02-05 02:05:00 MST               16h Wed 2026-02-04 02:05:09 MST       7h ago fsbackup-doctor@class2.timer    fsbackup-doctor@class2.service
-Thu 2026-02-05 02:15:00 MST               16h Wed 2026-02-04 02:15:01 MST       7h ago fsbackup-runner@class2.timer    fsbackup-runner@class2.service
-Thu 2026-02-05 02:30:00 MST               16h Wed 2026-02-04 02:30:05 MST       7h ago fsbackup-mirror-daily.timer     fsbackup-mirror-daily.service
-Thu 2026-02-05 02:39:08 MST               16h Wed 2026-02-04 00:17:39 MST       9h ago man-db.timer                    man-db.service
-Thu 2026-02-05 03:00:00 MST               16h Wed 2026-02-04 03:00:02 MST       7h ago fsbackup-retention.timer        fsbackup-retention.service
-Thu 2026-02-05 03:30:00 MST               17h Wed 2026-02-04 03:30:07 MST       6h ago fsbackup-promote.timer          fsbackup-promote.service
-Thu 2026-02-05 03:40:00 MST               17h Wed 2026-02-04 03:40:09 MST       6h ago fsbackup-mirror-promote.timer   fsbackup-mirror-promote.service
-Thu 2026-02-05 04:00:00 MST               17h Wed 2026-02-04 04:00:01 MST       6h ago fsbackup-mirror-retention.timer fsbackup-mirror-retention.service
-Thu 2026-02-05 04:09:20 MST               18h Wed 2026-02-04 00:50:17 MST       9h ago mdcheck_continue.timer          mdcheck_continue.service
-Thu 2026-02-05 06:05:07 MST               20h Wed 2026-02-04 06:05:07 MST 3h 57min ago update-notifier-download.timer  update-notifier-download.service
-Thu 2026-02-05 06:15:09 MST               20h Wed 2026-02-04 06:15:09 MST 3h 47min ago systemd-tmpfiles-clean.timer    systemd-tmpfiles-clean.service
-Thu 2026-02-05 06:38:20 MST               20h Wed 2026-02-04 06:09:47 MST 3h 53min ago apt-daily-upgrade.timer         apt-daily-upgrade.service
-Thu 2026-02-05 12:05:12 MST          1 day 2h Wed 2026-02-04 10:01:03 MST 1min 44s ago mdmonitor-oneshot.timer         mdmonitor-oneshot.service
-Sun 2026-02-08 03:10:19 MST            3 days Sun 2026-02-01 03:10:08 MST            - e2scrub_all.timer               e2scrub_all.service
-Mon 2026-02-09 00:12:44 MST            4 days Mon 2026-02-02 01:04:01 MST            - fstrim.timer                    fstrim.service
-Sat 2026-02-14 10:22:56 MST     1 week 3 days Mon 2026-02-02 11:56:21 MST            - update-notifier-motd.timer      update-notifier-motd.service
-Sun 2026-03-01 02:22:55 MST    3 weeks 3 days Sun 2026-02-01 01:35:45 MST            - mdcheck_start.timer             mdcheck_start.service
-Tue 2027-01-05 03:00:00 MST 10 months 30 days -                                      - fsbackup-annual-promote.timer   fsbackup-annual-promote.service
+## 8. Verify with doctor
+
+**Docker:**
+```bash
+docker exec -it fsbackup /opt/fsbackup/bin/fs-doctor.sh --class class1
+docker exec -it fsbackup /opt/fsbackup/bin/fs-doctor.sh --class class2
+```
+
+**Bare-metal:**
+```bash
+sudo -u fsbackup /opt/fsbackup/bin/fs-doctor.sh --class class1
+sudo -u fsbackup /opt/fsbackup/bin/fs-doctor.sh --class class2
+```
+
+All targets must show `OK`.
+
+---
+
+## 9. Run first snapshot
+
+**Docker:**
+```bash
+docker exec -it fsbackup /opt/fsbackup/bin/fs-runner.sh daily --class class1 --dry-run
+docker exec -it fsbackup /opt/fsbackup/bin/fs-runner.sh daily --class class1
+```
+
+**Bare-metal:**
+```bash
+sudo -u fsbackup /opt/fsbackup/bin/fs-runner.sh daily --class class1 --dry-run
+sudo -u fsbackup /opt/fsbackup/bin/fs-runner.sh daily --class class1
+```
+
+---
+
+## Daily schedule
+
+| Time | Job |
+|------|-----|
+| 01:15 | `fs-doctor.sh --class class1` |
+| 01:40 | `fs-db-export.sh` (if configured) |
+| 01:45 | `fs-runner.sh daily --class class1` |
+| 02:05 | `fs-doctor.sh --class class2` |
+| 02:15 | `fs-runner.sh daily --class class2` |
+| 02:30 | `fs-mirror.sh daily` |
+| 03:00 | `fs-retention.sh` |
+| 03:30 | `fs-promote.sh` |
+| 03:40 | `fs-mirror.sh promote` |
+| 04:00 | `fs-mirror-retention.sh` |
+| 04:30 | `fs-export-s3.sh` |
+| 04:45 (1st of month) | `fs-runner.sh monthly --class class3` |
+| 03:00 (Jan 5) | `fs-annual-promote.sh` |
