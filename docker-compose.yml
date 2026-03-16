@@ -6,6 +6,9 @@ services:
     user: "993:993"
     ports:
       - "8080:8080"
+    environment:
+      - TZ=America/Denver
+
     env_file:
       - web/.env
 

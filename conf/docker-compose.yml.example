@@ -17,6 +17,11 @@ services:
       # Container always binds on 8080 (set HOST=0.0.0.0, PORT=8080 in web/.env)
       - "8080:8080"
 
+    environment:
+      # Set to your local timezone so supercronic crontab times match wall clock.
+      # Without this the container runs UTC and cron schedule times will be offset.
+      - TZ=America/Denver
+
     env_file:
       # Copy web/.env.example → web/.env and fill in your values before starting.
       - web/.env

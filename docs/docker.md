@@ -153,6 +153,10 @@ services:
     ports:
       - "172.30.3.130:8080:8080"
 
+    # Set to your local timezone so crontab times match wall clock.
+    environment:
+      - TZ=America/Denver
+
     # Web UI config and credentials (see Web UI Configuration below).
     env_file:
       - stack.env
@@ -295,6 +299,8 @@ Changes write through to the host bind mount immediately.
 ## Scheduler (Crontab)
 
 supercronic reads `/etc/fsbackup/fsbackup.crontab` at startup and hot-reloads it on change. The file is bind-mounted from the host, so you can edit it on the host and supercronic picks up the change without a container restart.
+
+> **Timezone:** The container defaults to UTC. Crontab times are interpreted in the container timezone. Set `TZ=America/Denver` (or your local timezone) in the `environment:` section of the compose file so schedule times match your local wall clock. Without this, a crontab entry of `45 1 * * *` will fire at 1:45 AM UTC, not 1:45 AM local time.
 
 The default schedule (`conf/fsbackup.crontab`):
 
