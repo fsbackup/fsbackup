@@ -31,6 +31,7 @@ SNAPSHOT_ROOT = Path(os.environ.get("SNAPSHOT_ROOT", "/backup/snapshots"))
 MIRROR_ROOT   = Path(os.environ.get("MIRROR_ROOT",   "/backup2/snapshots"))
 TARGETS_FILE  = Path(os.environ.get("TARGETS_FILE",  "/etc/fsbackup/targets.yml"))
 SCRIPTS_DIR   = Path(os.environ.get("SCRIPTS_DIR",   "/opt/fsbackup"))
+CRONTAB_FILE  = Path(os.environ.get("CRONTAB_FILE",  "/etc/fsbackup/fsbackup.crontab"))
 
 # Retention policy (days) per tier — used to compute expiration dates
 RETENTION = {
@@ -556,6 +557,136 @@ async def api_run_status(request: Request):
 @app.get("/utilities", response_class=HTMLResponse)
 async def utilities_page(request: Request):
     return templates.TemplateResponse("utilities.html", {"request": request})
+
+
+# ---------------------------------------------------------------------------
+# Configuration page
+# ---------------------------------------------------------------------------
+
+def _load_crontab() -> list[dict]:
+    """Parse fsbackup.crontab into a list of {schedule, command, label} dicts."""
+    # Human-readable labels for known job patterns
+    _LABELS = {
+        "fs-logrotate-metric.sh": "Logrotate health metric",
+        "fs-doctor.sh --class class1": "Doctor — class1",
+        "fs-doctor.sh --class class2": "Doctor — class2",
+        "fs-doctor.sh --class class3": "Doctor — class3",
+        "fs-db-export.sh": "DB export",
+        "fs-runner.sh daily --class class1": "Backup runner — class1 (daily)",
+        "fs-runner.sh daily --class class2": "Backup runner — class2 (daily)",
+        "fs-runner.sh monthly --class class3": "Backup runner — class3 (monthly)",
+        "fs-mirror.sh daily": "Mirror — daily pass",
+        "fs-retention.sh": "Retention",
+        "fs-promote.sh": "Promote daily→weekly/monthly",
+        "fs-mirror.sh promote": "Mirror — promote pass",
+        "fs-mirror-retention.sh": "Mirror retention",
+        "fs-export-s3.sh": "S3 export",
+        "fs-annual-promote.sh": "Annual promote (Jan 5)",
+    }
+
+    entries = []
+    try:
+        lines = CRONTAB_FILE.read_text().splitlines()
+    except Exception:
+        return entries
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        parts = stripped.split(None, 5)
+        if len(parts) < 6:
+            continue
+        schedule = " ".join(parts[:5])
+        command  = parts[5]
+        label = next(
+            (lbl for key, lbl in _LABELS.items() if key in command),
+            command.split("/")[-1],
+        )
+        entries.append({"schedule": schedule, "command": command, "label": label})
+    return entries
+
+
+def _disk_info(path: Path) -> dict:
+    """Return df-style info for a path: total, used, free (bytes), and pct_used."""
+    try:
+        st = os.statvfs(path)
+        total = st.f_blocks * st.f_frsize
+        free  = st.f_bavail * st.f_frsize
+        used  = total - st.f_bfree * st.f_frsize
+        pct   = round(used / total * 100) if total else 0
+        return {"path": str(path), "total": total, "used": used, "free": free, "pct_used": pct, "error": None}
+    except Exception as exc:
+        return {"path": str(path), "total": 0, "used": 0, "free": 0, "pct_used": 0, "error": str(exc)}
+
+
+def _fmt_bytes(n: int) -> str:
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024:
+            return f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} PB"
+
+
+@app.get("/configuration", response_class=HTMLResponse)
+async def configuration_page(request: Request, tab: str = "hosts"):
+    targets = load_targets()
+
+    # Extract unique hosts from all classes
+    hosts: list[str] = []
+    seen: set[str] = set()
+    for class_targets in targets.values():
+        for t in class_targets:
+            h = t.get("host", "")
+            if h and h not in seen:
+                seen.add(h)
+                hosts.append(h)
+
+    # Build per-target volume info: which snapshot root has data for it?
+    target_volumes: dict[str, list[str]] = {}
+    for class_targets in targets.values():
+        for t in class_targets:
+            tid = t.get("id", "")
+            vols = []
+            for root in (SNAPSHOT_ROOT, MIRROR_ROOT):
+                for tier_dir in root.glob("*"):
+                    for date_dir in tier_dir.glob("*"):
+                        for cls_dir in date_dir.glob("*"):
+                            if (cls_dir / tid).exists():
+                                vols.append(str(root))
+                                break
+                        else:
+                            continue
+                        break
+                    else:
+                        continue
+                    break
+            target_volumes[tid] = list(set(vols))
+
+    primary_disk = _disk_info(SNAPSHOT_ROOT)
+    mirror_disk  = _disk_info(MIRROR_ROOT)
+
+    primary_disk["fmt_used"]  = _fmt_bytes(primary_disk["used"])
+    primary_disk["fmt_free"]  = _fmt_bytes(primary_disk["free"])
+    primary_disk["fmt_total"] = _fmt_bytes(primary_disk["total"])
+    mirror_disk["fmt_used"]   = _fmt_bytes(mirror_disk["used"])
+    mirror_disk["fmt_free"]   = _fmt_bytes(mirror_disk["free"])
+    mirror_disk["fmt_total"]  = _fmt_bytes(mirror_disk["total"])
+
+    crontab = _load_crontab()
+
+    return _template_response("configuration.html", {
+        "request":        request,
+        "tab":            tab,
+        "hosts":          hosts,
+        "targets":        targets,
+        "target_volumes": target_volumes,
+        "primary_disk":   primary_disk,
+        "mirror_disk":    mirror_disk,
+        "crontab":        crontab,
+        "snapshot_root":  str(SNAPSHOT_ROOT),
+        "mirror_root":    str(MIRROR_ROOT),
+    })
 
 
 @app.get("/s3", response_class=HTMLResponse)
