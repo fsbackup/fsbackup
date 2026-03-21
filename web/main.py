@@ -957,53 +957,6 @@ async def api_journal(request: Request, unit: str, n: int = 200):
     })
 
 
-@app.post("/api/run/{action}", response_class=HTMLResponse)
-async def api_run(request: Request, action: str, cls: str = Form(default="")):
-    """
-    Trigger a backup job. action: runner | doctor | promote | mirror
-    Spawns the script directly as a subprocess; output streamed into an
-    in-memory deque visible via the status poller. No systemd dependency.
-    """
-    key = f"{action}-{cls}" if cls else action
-    cmd = _JOB_COMMANDS.get(key)
-    result_msg = ""
-    result_ok  = False
-
-    if not cmd:
-        result_msg = f"Unknown job: {key}"
-    elif _jobs.get(key, {}).get("status") == "running":
-        result_msg = f"{key} is already running"
-    else:
-        try:
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-            )
-            with _jobs_lock:
-                _jobs[key] = {
-                    "status":     "running",
-                    "rc":         None,
-                    "started_at": datetime.now(),
-                    "ended_at":   None,
-                    "lines":      deque(maxlen=20),
-                }
-            threading.Thread(target=_stream_job, args=(key, proc), daemon=True).start()
-            result_ok  = True
-            result_msg = f"Started {key}"
-        except Exception as e:
-            result_msg = str(e)
-
-    return templates.TemplateResponse("partials/run_result.html", {
-        "request":    request,
-        "result_ok":  result_ok,
-        "result_msg": result_msg,
-        "unit":       key,
-    })
-
-
 @app.post("/api/run/rename-target", response_class=HTMLResponse)
 async def api_rename_target(
     request: Request,
@@ -1053,6 +1006,53 @@ async def api_rename_target(
             result_ok  = True
             mode_label = "move" if mode == "move" else "wipe history"
             result_msg = f"Started: {from_id} → {to_id} ({mode_label}{'  dry-run' if dry_run == '1' else ''})"
+        except Exception as e:
+            result_msg = str(e)
+
+    return templates.TemplateResponse("partials/run_result.html", {
+        "request":    request,
+        "result_ok":  result_ok,
+        "result_msg": result_msg,
+        "unit":       key,
+    })
+
+
+@app.post("/api/run/{action}", response_class=HTMLResponse)
+async def api_run(request: Request, action: str, cls: str = Form(default="")):
+    """
+    Trigger a backup job. action: runner | doctor | promote | mirror
+    Spawns the script directly as a subprocess; output streamed into an
+    in-memory deque visible via the status poller. No systemd dependency.
+    """
+    key = f"{action}-{cls}" if cls else action
+    cmd = _JOB_COMMANDS.get(key)
+    result_msg = ""
+    result_ok  = False
+
+    if not cmd:
+        result_msg = f"Unknown job: {key}"
+    elif _jobs.get(key, {}).get("status") == "running":
+        result_msg = f"{key} is already running"
+    else:
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+            with _jobs_lock:
+                _jobs[key] = {
+                    "status":     "running",
+                    "rc":         None,
+                    "started_at": datetime.now(),
+                    "ended_at":   None,
+                    "lines":      deque(maxlen=20),
+                }
+            threading.Thread(target=_stream_job, args=(key, proc), daemon=True).start()
+            result_ok  = True
+            result_msg = f"Started {key}"
         except Exception as e:
             result_msg = str(e)
 
