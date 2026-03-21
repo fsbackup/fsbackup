@@ -143,7 +143,7 @@
   [--dry-run]</pre>
     <div class="mt-2 space-y-0.5 text-xs text-zinc-400">
       <p><code class="font-mono">--move</code> — rename the directory in place (keeps snapshot history)</p>
-      <p><code class="font-mono">--delete</code> — remove the old target's snapshot directories</p>
+      <p><code class="font-mono">--delete</code> — wipe all snapshot directories for that target across every tier</p>
       <p><code class="font-mono">--dry-run</code> — preview changes without modifying anything</p>
     </div>
   </div>
@@ -274,7 +274,7 @@
             <input type="radio" name="mode" value="move" checked class="accent-brand-600"> Move (keep history)
           </label>
           <label class="flex items-center gap-2 text-sm text-zinc-700 dark:text-zinc-300 cursor-pointer">
-            <input type="radio" name="mode" value="delete" class="accent-brand-600"> Delete old snapshots
+            <input type="radio" name="mode" value="delete" class="accent-brand-600"> Wipe target history
           </label>
         </div>
       </div>

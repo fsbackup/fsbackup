@@ -1051,7 +1051,8 @@ async def api_rename_target(
                 }
             threading.Thread(target=_stream_job, args=(key, proc), daemon=True).start()
             result_ok  = True
-            result_msg = f"Started rename: {from_id} → {to_id} ({mode}{'  dry-run' if dry_run == '1' else ''})"
+            mode_label = "move" if mode == "move" else "wipe history"
+            result_msg = f"Started: {from_id} → {to_id} ({mode_label}{'  dry-run' if dry_run == '1' else ''})"
         except Exception as e:
             result_msg = str(e)
 
