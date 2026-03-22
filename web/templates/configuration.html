@@ -222,6 +222,10 @@ function closeCronModal() {
   document.getElementById('cron-modal').classList.add('hidden');
   document.getElementById('cron-modal').classList.remove('flex');
 }
+document.addEventListener('click', function(e) {
+  const btn = e.target.closest('.cron-edit-btn');
+  if (btn) openCronModal(btn.dataset.label, btn.dataset.command, btn.dataset.schedule);
+});
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeCronModal(); });
 </script>
 
