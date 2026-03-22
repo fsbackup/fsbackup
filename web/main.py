@@ -635,6 +635,30 @@ async def api_orphans_delete(request: Request, paths: list[str] = Form(...)):
             errors.append(f"{p.name}: {e}")
 
     orphans = list_orphan_snapshots()
+
+    # Update the Prometheus orphan metric so the dashboard reflects the deletion
+    if deleted:
+        try:
+            counts: dict[str, int] = {"primary": 0, "mirror": 0}
+            for o in orphans:
+                counts[o["root"]] = counts.get(o["root"], 0) + 1
+            prom_path = PROM_DIR / "fsbackup_orphans.prom"
+            tmp = prom_path.with_suffix(".prom.tmp")
+            tmp.write_text(
+                f'fsbackup_orphan_snapshots_total{{root="primary"}} {counts["primary"]}\n'
+                f'fsbackup_orphan_snapshots_total{{root="mirror"}} {counts["mirror"]}\n'
+            )
+            try:
+                import grp
+                gid = grp.getgrnam("nodeexp_txt").gr_gid
+                os.chown(tmp, -1, gid)
+            except (KeyError, AttributeError, OSError):
+                pass
+            tmp.chmod(0o644)
+            tmp.rename(prom_path)
+        except Exception:
+            pass  # non-fatal — metric will self-correct on next doctor run
+
     return _template_response("partials/orphan_table.html", {
         "request": request,
         "orphans": orphans,

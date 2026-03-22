@@ -141,7 +141,7 @@ scan_root() {
       ORPHANS["$label"]=$((ORPHANS["$label"] + 1))
       echo "$(date -Is) root=${label} tier=${tier} date=${date} class=${class} orphan=${target}" >>"$ORPHAN_LOG"
     fi
-  done < <(find "$root" -mindepth 3 -maxdepth 4 -type d)
+  done < <(find "$root" -mindepth 4 -maxdepth 4 -type d)
 }
 
 scan_root "$PRIMARY_SNAPSHOT_ROOT" "primary"
