@@ -47,10 +47,23 @@ echo
 info "Installing required packages..."
 apt-get update -qq
 apt-get install -y --no-install-recommends \
-    rsync openssh-client jq zstd awscli curl ca-certificates \
+    rsync openssh-client jq zstd curl ca-certificates unzip \
     python3 python3-venv acl zfsutils-linux sanoid \
     || die "apt-get failed"
 ok "Packages installed"
+
+# AWS CLI v2 (not in Ubuntu 24.04 apt repos)
+if ! command -v aws &>/dev/null; then
+    info "Installing AWS CLI v2..."
+    TMP_DIR="$(mktemp -d)"
+    curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "${TMP_DIR}/awscliv2.zip"
+    unzip -q "${TMP_DIR}/awscliv2.zip" -d "$TMP_DIR"
+    "${TMP_DIR}/aws/install"
+    rm -rf "$TMP_DIR"
+    ok "AWS CLI v2 installed"
+else
+    ok "AWS CLI already installed: $(aws --version 2>&1)"
+fi
 
 # yq (go-based, not the python one)
 if ! command -v yq &>/dev/null || ! yq --version 2>&1 | grep -q "mikefarah"; then

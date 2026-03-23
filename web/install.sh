@@ -110,11 +110,11 @@ else
     read -rp "Bind host [0.0.0.0]: " BIND_HOST; BIND_HOST="${BIND_HOST:-0.0.0.0}"
     read -rp "Bind port [8080]: "     BIND_PORT; BIND_PORT="${BIND_PORT:-8080}"
 
-    # Pull SNAPSHOT_ROOT from fsbackup.conf if available
-    SNAPSHOT_ROOT="/backup/snapshots"
-    [[ -f "${CONF_DIR}/fsbackup.conf" ]] && \
-        SNAPSHOT_ROOT=$(grep -E '^SNAPSHOT_ROOT=' "${CONF_DIR}/fsbackup.conf" \
-                        | cut -d= -f2- | tr -d '"'"'" | head -1) || true
+    # Pull values from fsbackup.conf if available
+    _conf_val() { grep -E "^${1}=" "${CONF_DIR}/fsbackup.conf" 2>/dev/null \
+                  | cut -d= -f2- | tr -d '"'"'" | head -1; }
+    SNAPSHOT_ROOT="$(_conf_val SNAPSHOT_ROOT)"; SNAPSHOT_ROOT="${SNAPSHOT_ROOT:-/backup/snapshots}"
+    S3_BUCKET="$(_conf_val S3_BUCKET)";         S3_BUCKET="${S3_BUCKET:-fsbackup-snapshots-SUFFIX}"
 
     cat > "$ENV_FILE" <<EOF
 # fsbackup web UI configuration
@@ -128,7 +128,7 @@ SECRET_KEY=$SECRET
 SNAPSHOT_ROOT=${SNAPSHOT_ROOT}
 TARGETS_FILE=${CONF_DIR}/targets.yml
 
-S3_BUCKET=fsbackup-snapshots-SUFFIX
+S3_BUCKET=${S3_BUCKET}
 S3_PROFILE=fsbackup
 S3_REGION=us-west-2
 EOF
