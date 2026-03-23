@@ -1,6 +1,6 @@
 [Unit]
 Description=fsbackup S3 export (weekly/monthly/annual snapshots)
-After=fsbackup-mirror-promote.service
+After=network-online.target
 
 [Service]
 UMask=0022

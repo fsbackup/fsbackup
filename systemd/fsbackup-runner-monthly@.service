@@ -1,5 +1,5 @@
 [Unit]
-Description=fsbackup runner (%i)
+Description=fsbackup monthly runner (%i)
 Wants=network-online.target
 After=network-online.target
 

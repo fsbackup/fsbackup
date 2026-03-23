@@ -1,8 +1,7 @@
 [Unit]
-Description=fsbackup runner (%i)
-After=network-online.target fsbackup-doctor@%i.service
-Requires=fsbackup-doctor@%i.service
+Description=fsbackup daily runner (%i)
 Wants=network-online.target
+After=network-online.target
 
 [Service]
 UMask=0022
@@ -10,4 +9,6 @@ Type=oneshot
 User=fsbackup
 Group=fsbackup
 ExecStart=/opt/fsbackup/bin/fs-runner.sh daily --class %i
-
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6

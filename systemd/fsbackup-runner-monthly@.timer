@@ -1,0 +1,11 @@
+[Unit]
+Description=fsbackup monthly runner timer (%i)
+
+[Timer]
+# Default schedule — overridden per-class by fs-schedule-apply.sh
+OnCalendar=*-*-01 04:00
+RandomizedDelaySec=5m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

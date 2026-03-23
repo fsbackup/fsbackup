@@ -1,17 +1,32 @@
 SNAPSHOT_ROOT="/backup/snapshots"
-SNAPSHOT_MIRROR_ROOT="/backup2/snapshots"
 
-# Space-separated list of classes to exclude from mirroring to SNAPSHOT_MIRROR_ROOT.
-# Leave empty (or omit) to mirror all classes.
-# Example: exclude class3 (large archives) to save space on the secondary drive.
-# MIRROR_SKIP_CLASSES="class3"
-MIRROR_SKIP_CLASSES=""
+# ZFS pool name (derived from SNAPSHOT_ROOT if unset — strip leading /)
+# ZFS_POOL="backup"
 
-# S3 export — set these to enable fs-export-s3.sh
+# =============================================================================
+# Schedule — OnCalendar= values for each class/type
+# Applied to systemd timers via: sudo fs-schedule-apply.sh
+# Format: https://www.freedesktop.org/software/systemd/man/systemd.time.html
+# =============================================================================
+
+CLASS1_DAILY_SCHEDULE="*-*-* 01:45"
+CLASS1_WEEKLY_SCHEDULE="Sat *-*-* 02:00"
+CLASS1_MONTHLY_SCHEDULE="*-*-01 03:00"
+
+CLASS2_DAILY_SCHEDULE="*-*-* 02:15"
+CLASS2_WEEKLY_SCHEDULE="Sat *-*-* 02:30"
+# CLASS2_MONTHLY_SCHEDULE=""   # omit to disable monthly class2 runs
+
+CLASS3_MONTHLY_SCHEDULE="*-*-01 04:00"
+# CLASS3_DAILY_SCHEDULE=""     # omit to disable daily class3 runs
+
+# =============================================================================
+# S3 export
+# =============================================================================
+
 S3_BUCKET="fsbackup-snapshots-XXXXXX"
 
 # Space-separated list of classes to exclude from S3 export.
-# Leave empty to upload all classes.
 # S3_SKIP_CLASSES="class3"
 S3_SKIP_CLASSES=""
 
