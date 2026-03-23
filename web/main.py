@@ -191,7 +191,8 @@ def load_targets() -> dict:
 
 
 def list_orphan_snapshots() -> list[dict]:
-    """Return snapshot dirs whose target ID is not in targets.yml, for primary and mirror."""
+    """Return dataset dirs whose target ID is not in targets.yml.
+    v2.0: SNAPSHOT_ROOT/class/target (depth 2, no tier/date dirs)."""
     targets = load_targets()
     valid_ids: set[str] = set()
     for entries in targets.values():
@@ -201,31 +202,20 @@ def list_orphan_snapshots() -> list[dict]:
                     valid_ids.add(entry["id"])
 
     orphans = []
-    for root_path, root_label in [(SNAPSHOT_ROOT, "primary"), (MIRROR_ROOT, "mirror")]:
-        if not root_path.is_dir():
+    if not SNAPSHOT_ROOT.is_dir():
+        return orphans
+    for cls_dir in sorted(SNAPSHOT_ROOT.iterdir()):
+        if not cls_dir.is_dir():
             continue
-        for tier_dir in root_path.iterdir():
-            if not tier_dir.is_dir():
+        for target_dir in sorted(cls_dir.iterdir()):
+            if not target_dir.is_dir():
                 continue
-            tier = tier_dir.name
-            for date_dir in sorted(tier_dir.iterdir(), reverse=True):
-                if not date_dir.is_dir():
-                    continue
-                for cls_dir in sorted(date_dir.iterdir()):
-                    if not cls_dir.is_dir():
-                        continue
-                    for target_dir in sorted(cls_dir.iterdir()):
-                        if not target_dir.is_dir():
-                            continue
-                        if target_dir.name not in valid_ids:
-                            orphans.append({
-                                "root":   root_label,
-                                "tier":   tier,
-                                "date":   date_dir.name,
-                                "class":  cls_dir.name,
-                                "target": target_dir.name,
-                                "path":   str(target_dir),
-                            })
+            if target_dir.name not in valid_ids:
+                orphans.append({
+                    "class":  cls_dir.name,
+                    "target": target_dir.name,
+                    "path":   str(target_dir),
+                })
     return orphans
 
 
@@ -615,19 +605,15 @@ async def orphans_page(request: Request):
 @app.post("/api/orphans/delete", response_class=HTMLResponse)
 async def api_orphans_delete(request: Request, paths: list[str] = Form(...)):
     """Delete selected orphan snapshot directories."""
-    allowed_roots = [SNAPSHOT_ROOT, MIRROR_ROOT]
     errors: list[str] = []
     deleted: list[str] = []
 
     for raw_path in paths:
         p = Path(raw_path).resolve()
-        # Safety: must be under SNAPSHOT_ROOT or MIRROR_ROOT, at least 4 levels deep
-        # (root/tier/date/class/target)
-        in_allowed = any(
-            p == root or p.is_relative_to(root) for root in allowed_roots
-        )
+        # Safety: must be under SNAPSHOT_ROOT, at least 2 levels deep (class/target)
+        in_allowed = p == SNAPSHOT_ROOT or p.is_relative_to(SNAPSHOT_ROOT)
         depth = len(p.parts) - len(SNAPSHOT_ROOT.parts)
-        if not in_allowed or depth < 4:
+        if not in_allowed or depth < 2:
             errors.append(f"Refused: {raw_path}")
             continue
         try:

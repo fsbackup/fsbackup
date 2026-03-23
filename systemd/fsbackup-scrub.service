@@ -1,0 +1,8 @@
+[Unit]
+Description=fsbackup ZFS pool scrub
+
+[Service]
+UMask=0022
+Type=oneshot
+User=root
+ExecStart=/opt/fsbackup/bin/fs-scrub-check.sh

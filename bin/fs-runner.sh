@@ -3,7 +3,15 @@ set -u
 set -o pipefail
 
 # =============================================================================
-# fs-runner.sh — deterministic snapshot executor (no metric duplication)
+# fs-runner.sh — ZFS-native snapshot executor
+#
+# Rsyncs each target to its flat ZFS dataset (SNAPSHOT_ROOT/CLASS/ID) and
+# takes a ZFS snapshot after each successful run. Snapshot naming:
+#   daily   → @daily-YYYY-MM-DD
+#   weekly  → @weekly-YYYY-Www
+#   monthly → @monthly-YYYY-MM
+#
+# Retention is managed by sanoid, not this script.
 # =============================================================================
 
 . /etc/fsbackup/fsbackup.conf
@@ -14,7 +22,9 @@ LOG_FILE="${LOG_DIR}/backup.log"
 NODE_TEXTFILE_DIR="/var/lib/node_exporter/textfile_collector"
 
 BACKUP_SSH_USER="backup"
-MAX_EXCLUDES=15
+
+# ZFS dataset root derived from SNAPSHOT_ROOT (strip leading /)
+ZFS_DATASET="${SNAPSHOT_ROOT#/}"
 
 SNAPSHOT_TYPE="$1"
 shift || true
@@ -22,10 +32,9 @@ shift || true
 CLASS=""
 TARGET_FILTER=""
 DRY_RUN=0
-REPLACE=0
 
 usage() {
-  echo "Usage: fs-runner.sh <daily|weekly|monthly> --class <class> [--target <id>] [--dry-run] [--replace-existing]"
+  echo "Usage: fs-runner.sh <daily|weekly|monthly> --class <class> [--target <id>] [--dry-run]"
   exit 2
 }
 
@@ -34,7 +43,6 @@ while [[ $# -gt 0 ]]; do
     --class) CLASS="$2"; shift 2 ;;
     --target) TARGET_FILTER="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
-    --replace-existing) REPLACE=1; shift ;;
     *) usage ;;
   esac
 done
@@ -60,8 +68,6 @@ is_local_host() {
   return 1
 }
 
-# Extract a numeric value from rsync --stats output by label prefix.
-# Returns 0 if the label is not found (e.g. no files deleted).
 _rsync_stat() {
   local label="$1" stats_file="$2"
   local raw
@@ -94,16 +100,18 @@ case "$SNAPSHOT_TYPE" in
   monthly) DATE_STR="$(date +%Y-%m)" ;;
   *)       DATE_STR="$(date +%F)" ;;
 esac
-DEST_BASE="${SNAPSHOT_ROOT}/${SNAPSHOT_TYPE}/${DATE_STR}/${CLASS}"
+
+SNAP_SUFFIX="${SNAPSHOT_TYPE}-${DATE_STR}"
 
 echo "$(date -Is) fs-runner starting"
 echo "  Snapshot type: $SNAPSHOT_TYPE"
 echo "  Class:         $CLASS"
 echo "  Target filter: ${TARGET_FILTER:-<none>}"
+echo "  Snap suffix:   @${SNAP_SUFFIX}"
 echo
 
 # -----------------------------------------------------------------------------
-# Load existing failure counters
+# Load existing failure counters and last_success values
 # -----------------------------------------------------------------------------
 
 declare -A FAILURE_COUNTERS
@@ -138,13 +146,11 @@ PROM_TMP="$(mktemp)"
 if [[ "$RUN_SCOPE_FULL" -eq 0 ]] && [[ -f "$PROM_FILE" ]]; then
   while IFS= read -r line; do
     [[ -z "$line" || "$line" == "#"* ]] && continue
-    # Skip class-level and counter metrics — handled separately below
     [[ "$line" =~ ^fsbackup_runner_target_failures_total ]] && continue
     [[ "$line" =~ ^fsbackup_runner_run_scope ]] && continue
     [[ "$line" =~ ^fsbackup_runner_success ]] && continue
     [[ "$line" =~ ^fsbackup_runner_failed ]] && continue
     [[ "$line" =~ ^fsbackup_runner_last_exit_code\{ ]] && continue
-    # Skip metrics for the target being re-run (will be written fresh)
     [[ "$line" == *"target=\"${TARGET_FILTER}\""* ]] && continue
     echo "$line"
   done < "$PROM_FILE" >> "$PROM_TMP"
@@ -158,14 +164,19 @@ for t in "${TARGETS[@]}"; do
   src="$(jq -r '.source' <<<"$t")"
   rsync_opts="$(jq -r '.rsync_opts // empty' <<<"$t")"
 
-  DEST="${DEST_BASE}/${id}"
-  mkdir -p "$DEST"
+  DEST="${SNAPSHOT_ROOT}/${CLASS}/${id}"
+
+  if [[ ! -d "$DEST" ]]; then
+    log "$id" "WARN: dataset not found at $DEST — skipping (run fs-provision.sh?)"
+    ((FAILED++))
+    FAILURE_COUNTERS["$id"]=$(( ${FAILURE_COUNTERS["$id"]:-0} + 1 ))
+    continue
+  fi
 
   log "$id" "Starting snapshot"
 
   RSYNC_CMD=(rsync -a --delete --stats)
   [[ "$DRY_RUN" -eq 1 ]] && RSYNC_CMD+=(-n)
-  [[ "$REPLACE" -eq 0 ]] && RSYNC_CMD+=(--ignore-existing)
   [[ -n "$rsync_opts" ]] && RSYNC_CMD+=($rsync_opts)
 
   RSYNC_STATS_TMP="$(mktemp)"
@@ -177,7 +188,6 @@ for t in "${TARGETS[@]}"; do
   fi
   rc=${PIPESTATUS[0]}
 
-  # Log any rsync stderr output so errors appear in backup.log
   if [[ -s "$RSYNC_ERR_TMP" ]]; then
     while IFS= read -r errline; do
       log "$id" "rsync: $errline"
@@ -193,6 +203,18 @@ for t in "${TARGETS[@]}"; do
     STAT_FILES_CREATED="$(_rsync_stat "Number of created files:" "$RSYNC_STATS_TMP")"
     STAT_FILES_DELETED="$(_rsync_stat "Number of deleted files:" "$RSYNC_STATS_TMP")"
     STAT_TRANSFERRED="$(_rsync_stat "Total transferred file size:" "$RSYNC_STATS_TMP")"
+
+    # Take ZFS snapshot after successful rsync
+    SNAP_NAME="${ZFS_DATASET}/${CLASS}/${id}@${SNAP_SUFFIX}"
+    if [[ "$DRY_RUN" -eq 0 ]]; then
+      if zfs snapshot "$SNAP_NAME" 2>/dev/null; then
+        log "$id" "ZFS snapshot: @${SNAP_SUFFIX}"
+      else
+        log "$id" "WARN: ZFS snapshot failed or already exists: @${SNAP_SUFFIX}"
+      fi
+    else
+      log "$id" "dry-run: would create ZFS snapshot @${SNAP_SUFFIX}"
+    fi
 
     cat >>"$PROM_TMP" <<EOF
 fsbackup_snapshot_last_success{class="${CLASS}",target="${id}"} ${NOW_EPOCH}
@@ -217,7 +239,6 @@ fsbackup_snapshot_last_failure{class="${CLASS}",target="${id}"} ${NOW_EPOCH}
 fsbackup_runner_target_last_seen{class="${CLASS}",target="${id}"} ${NOW_EPOCH}
 fsbackup_runner_target_last_exit_code{class="${CLASS}",target="${id}"} ${rc}
 EOF
-    # Carry forward the previous last_success so Grafana retains the history
     if [[ -n "${PREV_LAST_SUCCESS[$id]:-}" ]]; then
       echo "fsbackup_snapshot_last_success{class=\"${CLASS}\",target=\"${id}\"} ${PREV_LAST_SUCCESS[$id]}" >>"$PROM_TMP"
     fi
@@ -262,9 +283,7 @@ mv "$PROM_TMP" "$PROM_FILE"
 # Class exit marker
 # -----------------------------------------------------------------------------
 
-mkdir -p "$DEST_BASE"
 CLASS_EXIT=$([[ "$FAILED" -gt 0 ]] && echo 1 || echo 0)
-echo "$CLASS_EXIT" > "${DEST_BASE}/.fsbackup_class_exit_code"
+echo "$CLASS_EXIT" > "${LOG_DIR}/${CLASS}_exit_code"
 
 exit 0
-
