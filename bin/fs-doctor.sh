@@ -14,13 +14,11 @@ CLASS=""
 NODEEXP_DIR="/var/lib/node_exporter/textfile_collector"
 NODEEXP_METRIC="${NODEEXP_DIR}/fsbackup_nodeexp_health.prom"
 ORPHAN_METRIC="${NODEEXP_DIR}/fsbackup_orphans.prom"
-IMMUTABLE_METRIC="${NODEEXP_DIR}/fsbackup_annual_immutable.prom"
 
 ORPHAN_LOG="/var/lib/fsbackup/log/fs-orphans.log"
-IMMUTABLE_LOG="/var/lib/fsbackup/log/fs-immutable.log"
 
-PRIMARY_SNAPSHOT_ROOT="/backup/snapshots"
-MIRROR_SNAPSHOT_ROOT="/backup2/snapshots"
+. /etc/fsbackup/fsbackup.conf
+PRIMARY_SNAPSHOT_ROOT="${SNAPSHOT_ROOT:-/backup/snapshots}"
 
 usage() {
   echo "Usage: fs-doctor.sh --class <class>"
@@ -123,76 +121,27 @@ mapfile -t VALID_IDS < <(
 declare -A VALID
 for id in "${VALID_IDS[@]}"; do VALID["$id"]=1; done
 
-declare -A ORPHANS=(["primary"]=0 ["mirror"]=0)
+ORPHAN_COUNT=0
 
-scan_root() {
-  local root="$1"
-  local label="$2"
+# v2.0: datasets are at SNAPSHOT_ROOT/class/target (depth 2)
+while read -r d; do
+  target="$(basename "$d")"
+  class="$(basename "$(dirname "$d")")"
 
-  [[ -d "$root" ]] || return 0
-
-  while read -r d; do
-    target="$(basename "$d")"
-    class="$(basename "$(dirname "$d")")"
-    tier="$(basename "$(dirname "$(dirname "$d")")")"
-    date="$(basename "$(dirname "$(dirname "$(dirname "$d")")")")"
-
-    if [[ -z "${VALID[$target]+x}" ]]; then
-      ORPHANS["$label"]=$((ORPHANS["$label"] + 1))
-      echo "$(date -Is) root=${label} tier=${tier} date=${date} class=${class} orphan=${target}" >>"$ORPHAN_LOG"
-    fi
-  done < <(find "$root" -mindepth 4 -maxdepth 4 -type d)
-}
-
-scan_root "$PRIMARY_SNAPSHOT_ROOT" "primary"
-scan_root "$MIRROR_SNAPSHOT_ROOT" "mirror"
+  if [[ -z "${VALID[$target]+x}" ]]; then
+    ORPHAN_COUNT=$((ORPHAN_COUNT + 1))
+    echo "$(date -Is) class=${class} orphan=${target}" >>"$ORPHAN_LOG"
+  fi
+done < <(find "$PRIMARY_SNAPSHOT_ROOT" -mindepth 2 -maxdepth 2 -type d)
 
 tmp="$(mktemp)"
 cat >"$tmp" <<EOF
-fsbackup_orphan_snapshots_total{root="primary"} ${ORPHANS[primary]}
-fsbackup_orphan_snapshots_total{root="mirror"} ${ORPHANS[mirror]}
+fsbackup_orphan_snapshots_total ${ORPHAN_COUNT}
 EOF
 chgrp nodeexp_txt "$tmp" 2>/dev/null || true
 chmod 0644 "$tmp"
 mv "$tmp" "$ORPHAN_METRIC"
 
-# -----------------------------------------------------------------------------
-# 🔒 ANNUAL IMMUTABILITY VERIFICATION
-# -----------------------------------------------------------------------------
-mkdir -p "$(dirname "$IMMUTABLE_LOG")"
-
-PRIMARY_IMMUTABLE=1
-MIRROR_IMMUTABLE=1
-
-check_annual() {
-  local root="$1"
-  local label="$2"
-
-  local annual_root="${root}/annual"
-  [[ -d "$annual_root" ]] || return 0
-
-  while read -r d; do
-    if [[ -w "$d" ]]; then
-      echo "$(date -Is) root=${label} writable=${d}" >>"$IMMUTABLE_LOG"
-      [[ "$label" == "primary" ]] && PRIMARY_IMMUTABLE=0
-      [[ "$label" == "mirror" ]] && MIRROR_IMMUTABLE=0
-    fi
-  done < <(find "$annual_root" -type d)
-}
-
-check_annual "$PRIMARY_SNAPSHOT_ROOT" "primary"
-check_annual "$MIRROR_SNAPSHOT_ROOT" "mirror"
-
-tmp="$(mktemp)"
-cat >"$tmp" <<EOF
-# HELP fsbackup_annual_immutable Whether annual snapshots are immutable (1=yes,0=no)
-# TYPE fsbackup_annual_immutable gauge
-fsbackup_annual_immutable{root="primary"} ${PRIMARY_IMMUTABLE}
-fsbackup_annual_immutable{root="mirror"} ${MIRROR_IMMUTABLE}
-EOF
-chgrp nodeexp_txt "$tmp" 2>/dev/null || true
-chmod 0644 "$tmp"
-mv "$tmp" "$IMMUTABLE_METRIC"
 
 END_TS=$(date +%s.%N)
 DURATION=$(awk "BEGIN {print $END_TS - $START_TS}")
