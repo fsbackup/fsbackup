@@ -99,6 +99,7 @@
             <th class="px-4 py-3 font-medium">Host</th>
             <th class="px-4 py-3 font-medium">Source Path</th>
             <th class="px-4 py-3 font-medium">Excludes</th>
+            <th class="px-4 py-3 font-medium">Dataset Size</th>
             <th class="px-4 py-3 font-medium"></th>
           </tr>
         </thead>
@@ -110,6 +111,18 @@
             <td class="px-4 py-2.5 text-zinc-600 dark:text-zinc-300 font-mono text-xs">{{ target.source }}</td>
             <td class="px-4 py-2.5 text-xs text-zinc-400 font-mono max-w-xs truncate">
               {{ target.rsync_opts if target.rsync_opts is defined else '—' }}
+            </td>
+            <td class="px-4 py-2.5 text-xs text-zinc-500 dark:text-zinc-400 whitespace-nowrap">
+              {% set sz = target_volumes.get(target.id) %}
+              {% if sz is none %}
+                <span class="text-zinc-300 dark:text-zinc-600">not provisioned</span>
+              {% else %}
+                {% if sz < 1048576 %}{{ "%.0f KB" | format(sz / 1024) }}
+                {% elif sz < 1073741824 %}{{ "%.1f MB" | format(sz / 1048576) }}
+                {% elif sz < 1099511627776 %}{{ "%.2f GB" | format(sz / 1073741824) }}
+                {% else %}{{ "%.2f TB" | format(sz / 1099511627776) }}
+                {% endif %}
+              {% endif %}
             </td>
             <td class="px-4 py-2.5 text-right whitespace-nowrap">
               <a href="/snapshots?target={{ target.id }}"
@@ -123,7 +136,7 @@
           </tr>
           {% else %}
           <tr>
-            <td colspan="5" class="px-4 py-6 text-center text-zinc-400 text-sm">No targets defined.</td>
+            <td colspan="6" class="px-4 py-6 text-center text-zinc-400 text-sm">No targets defined.</td>
           </tr>
           {% endfor %}
         </tbody>

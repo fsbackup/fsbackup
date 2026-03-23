@@ -785,7 +785,25 @@ def _load_crontab() -> list[dict]:
 
 
 def _disk_info(path: Path) -> dict:
-    """Return df-style info for a path: total, used, free (bytes), and pct_used."""
+    """Return df-style info for a path: total, used, free (bytes), and pct_used.
+
+    For ZFS paths, uses `zfs list -Hp -o used,avail` which returns accurate
+    pool-level stats. Falls back to statvfs for non-ZFS paths.
+    """
+    zfs_base = str(path).lstrip("/")
+    try:
+        r = subprocess.run(
+            ["zfs", "list", "-Hp", "-o", "used,avail", zfs_base],
+            capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode == 0:
+            parts = r.stdout.strip().split()
+            used, free = int(parts[0]), int(parts[1])
+            total = used + free
+            pct   = round(used / total * 100) if total else 0
+            return {"path": str(path), "total": total, "used": used, "free": free, "pct_used": pct, "error": None}
+    except Exception:
+        pass
     try:
         st = os.statvfs(path)
         total = st.f_blocks * st.f_frsize
@@ -819,12 +837,28 @@ async def configuration_page(request: Request, tab: str = "hosts"):
                 seen.add(h)
                 hosts.append(h)
 
-    # Build per-target provisioned status: does the ZFS dataset exist?
-    target_volumes: dict[str, bool] = {}
+    # Build per-target ZFS dataset size (used bytes, including snapshots).
+    # One `zfs list` call for all datasets under SNAPSHOT_ROOT.
+    zfs_base = str(SNAPSHOT_ROOT).lstrip("/")
+    dataset_used: dict[str, int] = {}
+    try:
+        r = subprocess.run(
+            ["zfs", "list", "-rHp", "-o", "name,used", zfs_base],
+            capture_output=True, text=True, timeout=10,
+        )
+        for line in r.stdout.strip().splitlines():
+            parts = line.split("\t")
+            if len(parts) == 2:
+                dataset_used[parts[0]] = int(parts[1])
+    except Exception:
+        pass
+
+    target_volumes: dict[str, int | None] = {}
     for class_name, class_targets in targets.items():
         for t in class_targets:
             tid = t.get("id", "")
-            target_volumes[tid] = (SNAPSHOT_ROOT / class_name / tid).is_dir()
+            key = f"{zfs_base}/{class_name}/{tid}"
+            target_volumes[tid] = dataset_used.get(key)
 
     primary_disk = _disk_info(SNAPSHOT_ROOT)
     primary_disk["fmt_used"]  = _fmt_bytes(primary_disk["used"])
