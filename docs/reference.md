@@ -13,161 +13,149 @@ policy, and offsite strategy.
 
 Frequently changing data: app volumes, databases, personal files.
 
-- **Schedule**: daily at ~01:49
-- **Tiers**: daily, weekly, monthly, annual
-- **Mirror**: yes (to `/backup2`)
-- **Annual**: December monthly snapshot promoted to annual on Jan 5
-- **Offsite**: via S3 (planned — see [Offsite](#offsite))
+- **Schedule**: daily at ~01:45, weekly Sat ~02:00, monthly 1st ~03:00
+- **Tiers**: daily, weekly, monthly
+- **Offsite**: S3 — weekly + monthly uploaded nightly via `fsbackup-s3-export.timer`
 
 ### class2 — Infrastructure config
 
-Slowly changing config: docker stacks, nginx, bind, webmin, etc.
+Slowly changing config: docker stacks, nginx, bind, etc.
 
-- **Schedule**: daily at ~02:15
-- **Tiers**: daily, weekly, monthly (no annual)
-- **Mirror**: yes (to `/backup2`)
-- **Offsite**: via S3 (planned — see [Offsite](#offsite))
+- **Schedule**: daily at ~02:15, weekly Sat ~02:30
+- **Tiers**: daily, weekly (monthly disabled — `CLASS2_MONTHLY_SCHEDULE` commented out in `fsbackup.conf`)
+- **Offsite**: S3 — weekly uploaded nightly via `fsbackup-s3-export.timer`
 
 ### class3 — Large archives
 
 Large, infrequently changing data: photo libraries, raw camera files.
 
-- **Schedule**: monthly (1st of each month at ~04:45)
-- **Tiers**: monthly only (no daily, no weekly, no annual)
-- **Mirror**: **no** — excluded via `MIRROR_SKIP_CLASSES=class3` in `fsbackup.conf`
-- **Offsite**: M-DISC annually (manual), USB external drive monthly (manual)
+- **Schedule**: monthly (1st of each month at ~04:00)
+- **Tiers**: monthly only (no daily, no weekly)
+- **Offsite**: excluded from S3 by default (`S3_SKIP_CLASSES=class3`); manual M-DISC/USB
 
 ---
 
 ## Snapshot path structure
 
+fsbackup v2 uses ZFS-native snapshots. Each target has a dedicated ZFS dataset; snapshots
+are named with a tier prefix and a date stamp.
+
+**ZFS dataset path**: `backup/snapshots/<class>/<target>`
+
+**Snapshot names**:
+
+| Tier | Format | Example |
+|---|---|---|
+| daily | `@daily-YYYY-MM-DD` | `@daily-2026-04-11` |
+| weekly | `@weekly-YYYY-Www` | `@weekly-2026-W15` |
+| monthly | `@monthly-YYYY-MM` | `@monthly-2026-04` |
+
+**Filesystem access** (read-only via `.zfs` automount):
+
 ```
-/backup/snapshots/<tier>/<date>/<class>/<target-id>/
+/backup/snapshots/<class>/<target>/.zfs/snapshot/<snapshot-name>/
 ```
 
-| Component | Values |
-|---|---|
-| `tier` | `daily`, `weekly`, `monthly`, `annual` |
-| `date` | `YYYY-MM-DD` (daily), `YYYY-Www` (weekly), `YYYY-MM` (monthly), `YYYY` (annual) |
-| `class` | `class1`, `class2`, `class3` |
-| `target-id` | as defined in `targets.yml` |
-
-Example: `/backup/snapshots/daily/2026-03-05/class1/mosquitto.data/`
-
-The mirror follows the same structure under `/backup2/snapshots/`.
+Example: `/backup/snapshots/class1/technicom.files/.zfs/snapshot/weekly-2026-W15/`
 
 ---
 
 ## Retention policy
 
-### Primary (`/backup/snapshots`)
-
 | Tier | Kept |
 |---|---|
-| daily | 14 days |
-| weekly | 8 weeks |
-| monthly | 12 months |
-| annual | indefinite (never pruned by retention script) |
+| daily | 14 (`KEEP_DAILY`) |
+| weekly | 8 (`KEEP_WEEKLY`) |
+| monthly | 12 (`KEEP_MONTHLY`) |
 
-Retention runs daily at ~03:00 via `fsbackup-retention.timer`.
-
-### Mirror (`/backup2/snapshots`)
-
-| Tier | Kept |
-|---|---|
-| daily | 14 days |
-| weekly | 12 weeks |
-| monthly | 24 months |
-
-Mirror retention runs daily at ~04:00 via `fsbackup-mirror-retention.timer`.
-Mirror keeps longer weekly/monthly history than primary due to available space.
+Retention runs daily at ~06:00 via `fsbackup-retention.timer` (after overnight backup windows).
 
 ---
 
-## Promotion
+## Promotion and mirroring
 
-Promotion creates hardlinked copies of daily snapshots into higher tiers.
-Hardlinks mean promoted snapshots share blocks with the daily source — no extra disk
-space for unchanged files.
-
-| Event | Action | Condition |
-|---|---|---|
-| Daily → weekly | Promote today's daily to `weekly/YYYY-Www/` | Runs on Monday (DOW=1) |
-| Daily → monthly | Promote today's daily to `monthly/YYYY-MM/` | Runs on 1st of month |
-| Monthly Dec → annual | Promote December monthly to `annual/YYYY/` | Runs Jan 5 each year |
-
-Only `class1` is promoted to annual. `class2` and `class3` have no annual tier.
-
-Promotion only proceeds if the source daily snapshot has a clean exit code
-(`.fsbackup_class_exit_code` = 0). A failed daily is not promoted.
-
-Annual snapshots are made read-only (`chmod -R u-w`) immediately after creation.
-
----
-
-## Mirror logic
-
-The mirror (`fs-mirror.sh`) runs in two modes:
-
-### daily mode
-
-Copies today's daily snapshot from primary to mirror, skipping any classes listed in
-`MIRROR_SKIP_CLASSES`. Runs at ~02:30 after the runner completes.
-
-### promote mode
-
-Syncs the entire `weekly/` and `monthly/` trees from primary to mirror, with per-class
-excludes for any classes in `MIRROR_SKIP_CLASSES`. Runs at ~03:40 after promotion.
-
-Mirror uses `rsync -a --ignore-existing` so it never overwrites data already on the mirror.
-
-Classes in `MIRROR_SKIP_CLASSES` (currently `class3`) are never mirrored to `/backup2`.
+Not implemented in v2.0. Each tier (daily/weekly/monthly) is taken independently by
+its own runner timer. There are no hardlink promotions or mirror copies in this release.
 
 ---
 
 ## Offsite strategy
 
-### class1 and class2
+### S3 (class1 + class2)
 
-S3 offsite is planned but not yet implemented. The existing `fs-export-s3.sh` script is
-broken and needs a complete rewrite before use.
+Weekly and monthly ZFS snapshots are encrypted with `age` and uploaded to S3 nightly
+by `fs-export-s3.sh`. The script is idempotent: it enumerates all current ZFS snapshots
+and uploads any weekly/monthly/annual snapshots not already present in the bucket.
+This means the first successful run will backfill all previously missed snapshots.
 
-_This section will be updated when the S3 export system is designed and implemented._
+S3 key layout: `<tier>/<class>/<target>/<target>--<date>.tar.zst.age`
+
+| Setting | Value |
+|---|---|
+| Bucket | `S3_BUCKET` in `fsbackup.conf` |
+| AWS profile | `S3_AWS_PROFILE` (default: `fsbackup`) |
+| Credentials | `/var/lib/fsbackup/.aws/credentials` |
+| Encryption | `age` public key at `/etc/fsbackup/age.pub` |
+| Skip classes | `S3_SKIP_CLASSES` (default: `class3`) |
+
+The `age` private key is **not stored on the server**. Keep it offline (e.g., Bitwarden,
+encrypted USB). Without it, S3 objects cannot be decrypted for restore.
 
 ### class3 — photos and large archives
 
-class3 is not mirrored to `/backup2`. Offsite copies are made manually:
+Excluded from S3 by default (`S3_SKIP_CLASSES=class3`). Manual offsite copies:
 
 | Frequency | Medium | Process |
 |---|---|---|
-| Monthly | USB external drive | Manual copy from `/backup/snapshots/monthly/YYYY-MM/class3/` |
+| Monthly | USB external drive | Manual copy from snapshot `.zfs/snapshot/monthly-YYYY-MM/` |
 | Annual | M-DISC (archival optical disc) | Manual burn from the December monthly snapshot |
-
-M-DISC is suitable for class3 because the data is large, changes slowly, and benefits
-from media that does not degrade over time. The annual burn corresponds to the same
-snapshot that would be promoted to annual for class1.
 
 ---
 
 ## Timer schedule
 
-All times approximate. Timers use `RandomizedDelaySec` to avoid thundering herd.
+All times approximate. Runner timers use `RandomizedDelaySec=5m`.
+
+**Nightly (every day)**
 
 | Time | Unit | Action |
 |---|---|---|
-| 01:17 | `fsbackup-doctor@class1` | SSH/path health check, orphan scan |
-| 01:40 | `fs-db-export@paperlessngx` | DB dump to export dir |
-| 01:49 | `fsbackup-runner@class1` | Daily snapshot — class1 |
-| 02:05 | `fsbackup-doctor@class2` | SSH/path health check |
-| 02:15 | `fsbackup-runner@class2` | Daily snapshot — class2 |
-| 02:30 | `fsbackup-mirror-daily` | Mirror today's daily (class1 + class2) |
-| 03:00 | `fsbackup-retention` | Prune primary snapshots |
-| 03:30 | `fsbackup-promote` | Promote daily → weekly/monthly |
-| 03:40 | `fsbackup-mirror-promote` | Mirror weekly + monthly tiers |
-| 04:00 | `fsbackup-mirror-retention` | Prune mirror snapshots |
-| 04:15 (1st) | `fsbackup-doctor@class3` | Health check (runs 1st of month) |
-| 04:45 (1st) | `fsbackup-runner@class3` | Monthly snapshot — class3 (runs 1st of month) |
-| Jan 5, 03:00 | `fsbackup-annual-promote` | Promote Dec monthly → annual (class1 only) |
+| ~01:45 | `fsbackup-runner-daily@class1` | Daily rsync + ZFS snapshot — class1 |
+| 02:05 | `fsbackup-doctor@class1` | SSH/path health check — class1 |
+| 02:05 | `fsbackup-doctor@class2` | SSH/path health check — class2 |
+| 02:05 | `fsbackup-doctor@class3` | SSH/path health check — class3 |
+| ~02:15 | `fsbackup-runner-daily@class2` | Daily rsync + ZFS snapshot — class2 |
+| 04:30 | `fsbackup-s3-export` | Encrypt + upload weekly/monthly to S3 |
+| 06:00 | `fsbackup-retention` | Prune old ZFS snapshots (all classes) |
+| 00:00 | `fsbackup-logrotate-metric` | Rotate Prometheus `.prom` files |
+
+**Weekly (Saturday)**
+
+| Time | Unit | Action |
+|---|---|---|
+| Sat ~02:00 | `fsbackup-runner-weekly@class1` | Weekly rsync + ZFS snapshot — class1 |
+| Sat ~02:30 | `fsbackup-runner-weekly@class2` | Weekly rsync + ZFS snapshot — class2 |
+
+**Monthly (1st of month)**
+
+| Time | Unit | Action |
+|---|---|---|
+| 1st ~03:00 | `fsbackup-runner-monthly@class1` | Monthly rsync + ZFS snapshot — class1 |
+| 1st ~04:00 | `fsbackup-runner-monthly@class3` | Monthly rsync + ZFS snapshot — class3 |
+
+**Monthly (5th of month)**
+
+| Time | Unit | Action |
+|---|---|---|
+| 5th 03:00 | `fsbackup-scrub` | ZFS pool scrub |
+
+> **Note**: `fsbackup-runner-monthly@class2` is intentionally disabled
+> (`CLASS2_MONTHLY_SCHEDULE` commented out in `fsbackup.conf`). class2 retains
+> 14 days of dailies and 8 weeks of weeklies, which is sufficient for config data.
+
+> **Schedule note**: On Saturdays, class1 daily (01:45) and weekly (02:00) run only
+> 15 minutes apart. If the daily backup takes longer than ~15 minutes, both runners
+> may overlap. Check `fs-runner.sh` locking if this causes issues.
 
 ---
 
@@ -210,3 +198,12 @@ All times approximate. Timers use `RandomizedDelaySec` to avoid thundering herd.
 | `fsbackup_annual_promote_success{year}` | 1 if annual promote succeeded |
 | `fsbackup_doctor_duration_seconds{class}` | Doctor run duration |
 | `fsbackup_ssh_host_key_present{host,fingerprint}` | 1 if SSH host key is trusted |
+| `fsbackup_s3_last_success` | Unix timestamp of last S3 export run |
+| `fsbackup_s3_last_exit_code` | Exit code of last S3 export run (0=success) |
+| `fsbackup_s3_uploaded_total` | Objects uploaded in last S3 run |
+| `fsbackup_s3_skipped_total` | Objects skipped (already in S3) in last run |
+| `fsbackup_s3_failed_total` | Objects that failed to upload in last run |
+| `fsbackup_s3_bytes_total` | Bytes uploaded in last S3 run |
+| `fsbackup_s3_duration_seconds` | Duration of last S3 export run |
+| `fsbackup_s3_target_last_upload{tier,class,target}` | Timestamp of last successful upload per target |
+| `fsbackup_s3_target_last_failure{tier,class,target}` | Timestamp of last upload failure per target |

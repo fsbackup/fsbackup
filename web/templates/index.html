@@ -37,6 +37,60 @@
   {% endfor %}
 </div>
 
+<!-- S3 export status -->
+<div class="mb-8">
+  <h2 class="text-sm font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider mb-3">S3 Offsite</h2>
+  {% if s3_status %}
+  <div class="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl p-5 shadow-sm">
+    <div class="flex items-center justify-between mb-4">
+      <span class="text-sm font-semibold text-zinc-700 dark:text-zinc-300">S3 Export</span>
+      {% if s3_status.status == "ok" %}
+        <span class="inline-flex items-center gap-1.5 text-xs font-medium bg-emerald-50 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800 px-2.5 py-1 rounded-full">
+          <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 dark:bg-emerald-400"></span> OK
+        </span>
+      {% else %}
+        <span class="inline-flex items-center gap-1.5 text-xs font-medium bg-red-50 dark:bg-red-900/40 text-red-700 dark:text-red-400 border border-red-200 dark:border-red-800 px-2.5 py-1 rounded-full">
+          <span class="w-1.5 h-1.5 rounded-full bg-red-500 dark:bg-red-400"></span> Error
+        </span>
+      {% endif %}
+    </div>
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-4">
+      <div>
+        <p class="text-xs text-zinc-400 mb-0.5">Last run</p>
+        <p class="text-sm font-mono font-medium text-zinc-800 dark:text-zinc-200" title="{{ s3_status.last_run_fmt }}">{{ s3_status.last_run }}</p>
+      </div>
+      <div>
+        <p class="text-xs text-zinc-400 mb-0.5">Uploaded</p>
+        <p class="text-sm font-mono font-medium text-zinc-800 dark:text-zinc-200">{{ s3_status.uploaded }}</p>
+      </div>
+      <div>
+        <p class="text-xs text-zinc-400 mb-0.5">Skipped</p>
+        <p class="text-sm font-mono font-medium text-zinc-800 dark:text-zinc-200">{{ s3_status.skipped }}</p>
+      </div>
+      <div>
+        <p class="text-xs text-zinc-400 mb-0.5">Failed</p>
+        <p class="text-sm font-mono font-medium {% if s3_status.failed > 0 %}text-red-600 dark:text-red-400{% else %}text-zinc-800 dark:text-zinc-200{% endif %}">{{ s3_status.failed }}</p>
+      </div>
+    </div>
+    <div class="flex items-center gap-6 text-xs text-zinc-400">
+      <span>Bytes this run: <span class="text-zinc-600 dark:text-zinc-300 font-mono">{{ s3_status.bytes }}</span></span>
+      <span>Duration: <span class="text-zinc-600 dark:text-zinc-300 font-mono">{{ s3_status.duration }}</span></span>
+      <a href="/s3" class="ml-auto text-brand-600 dark:text-brand-400 hover:text-brand-700 dark:hover:text-brand-300">Browse bucket &rarr;</a>
+    </div>
+  </div>
+  {% else %}
+  <div class="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl p-5 shadow-sm flex items-center justify-between">
+    <div>
+      <p class="text-sm font-semibold text-zinc-700 dark:text-zinc-300">S3 Export</p>
+      <p class="text-xs text-zinc-400 mt-1">No metrics yet — export has not run or prom file is missing</p>
+    </div>
+    <span class="inline-flex items-center gap-1.5 text-xs font-medium bg-zinc-100 dark:bg-zinc-800 text-zinc-500 border border-zinc-200 dark:border-zinc-700 px-2.5 py-1 rounded-full">
+      <span class="w-1.5 h-1.5 rounded-full bg-zinc-400"></span> No data
+    </span>
+  </div>
+  {% endif %}
+</div>
+
 <!-- Quick links -->
 <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
   {% set links = [
