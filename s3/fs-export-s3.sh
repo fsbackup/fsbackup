@@ -35,6 +35,7 @@ LOG_FILE="${LOG_DIR}/s3-export.log"
 NODEEXP_DIR="/var/lib/node_exporter/textfile_collector"
 PROM_OUT="${NODEEXP_DIR}/fsbackup_s3.prom"
 PROM_TMP="$(mktemp)"
+trap 'rm -f "$PROM_TMP"' EXIT
 
 mkdir -p "$LOG_DIR"
 
@@ -155,7 +156,7 @@ while IFS= read -r snapfull; do
       >>"$PROM_TMP"
   fi
 
-done < <(zfs list -t snapshot -r -H -o name "$ZFS_BASE" 2>/dev/null | sort)
+done < <(zfs list -t snapshot -r -H -o name "$ZFS_BASE" 2>>"$LOG_FILE" | sort)
 
 END_TS="$(date +%s)"
 DURATION=$((END_TS - START_TS))

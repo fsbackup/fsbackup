@@ -357,22 +357,25 @@ async def logout(request: Request):
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
-    # Quick status: last exit code prom files
-    prom_dir = Path("/var/lib/node_exporter/textfile_collector")
+    # Class runner status from prom files
     class_status = {}
     for cls in CLASSES:
-        prom = prom_dir / f"fsbackup_runner_{cls}.prom"
         status = "unknown"
-        if prom.exists():
-            for line in prom.read_text().splitlines():
-                if line.startswith("fsbackup_runner_last_exit_code{"):
-                    status = "ok" if line.split()[-1] == "0" else "error"
-                    break
+        try:
+            prom = PROM_DIR / f"fsbackup_runner_{cls}.prom"
+            if prom.exists():
+                for line in prom.read_text(errors="replace").splitlines():
+                    if line.startswith("fsbackup_runner_last_exit_code{"):
+                        status = "ok" if line.split()[-1] == "0" else "error"
+                        break
+        except Exception:
+            pass
         class_status[cls] = status
 
     return templates.TemplateResponse("index.html", {
         "request":      request,
         "class_status": class_status,
+        "s3_status":    _parse_s3_status(),
     })
 
 
@@ -740,6 +743,73 @@ _LOG_SECTIONS = [
 ]
 
 
+def _humanize_age(ts: int) -> tuple[str, str]:
+    """Return (relative string, absolute formatted) for a Unix timestamp."""
+    if ts <= 0:
+        return "never", "—"
+    dt  = datetime.fromtimestamp(ts)
+    age = datetime.now() - dt
+    if age.days > 0:
+        rel = f"{age.days}d ago"
+    elif age.seconds >= 3600:
+        rel = f"{age.seconds // 3600}h ago"
+    elif age.seconds >= 60:
+        rel = f"{age.seconds // 60}m ago"
+    else:
+        rel = "just now"
+    return rel, dt.strftime("%Y-%m-%d %H:%M")
+
+
+def _humanize_bytes(n: int) -> str:
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if n < 1024 or unit == "TiB":
+            return f"{n:.1f} {unit}" if unit != "B" else f"{n} B"
+        n //= 1024
+    return str(n)
+
+
+def _parse_s3_status() -> dict | None:
+    """Parse fsbackup_s3.prom and return a human-readable status dict, or None if absent."""
+    prom = PROM_DIR / "fsbackup_s3.prom"
+    if not prom.exists():
+        return None
+    raw: dict[str, str] = {}
+    try:
+        for line in prom.read_text(errors="replace").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            metric = parts[0].split("{")[0]
+            raw[metric] = parts[1]
+    except Exception:
+        return None
+    try:
+        exit_code    = int(float(raw.get("fsbackup_s3_last_exit_code",   "1")))
+        last_ts      = int(float(raw.get("fsbackup_s3_last_success",     "0")))
+        uploaded     = int(float(raw.get("fsbackup_s3_uploaded_total",   "0")))
+        skipped      = int(float(raw.get("fsbackup_s3_skipped_total",    "0")))
+        failed       = int(float(raw.get("fsbackup_s3_failed_total",     "0")))
+        bytes_total  = int(float(raw.get("fsbackup_s3_bytes_total",      "0")))
+        duration     = int(float(raw.get("fsbackup_s3_duration_seconds", "0")))
+    except (ValueError, TypeError):
+        return None
+    last_run, last_run_fmt = _humanize_age(last_ts)
+    dur_str = f"{duration // 60}m {duration % 60}s" if duration >= 60 else f"{duration}s"
+    return {
+        "status":       "ok" if exit_code == 0 else "error",
+        "last_run":     last_run,
+        "last_run_fmt": last_run_fmt,
+        "uploaded":     uploaded,
+        "skipped":      skipped,
+        "failed":       failed,
+        "bytes":        _humanize_bytes(bytes_total),
+        "duration":     dur_str,
+    }
+
+
 def _parse_prom_files() -> list[dict]:
     """Read all fsbackup*.prom files and return parsed metric rows."""
     rows: list[dict] = []
@@ -798,47 +868,78 @@ async def logs_page(request: Request):
 # Configuration page
 # ---------------------------------------------------------------------------
 
-def _load_crontab() -> list[dict]:
-    """Parse fsbackup.crontab into a list of {schedule, command, label} dicts."""
-    # Human-readable labels for known job patterns
-    _LABELS = {
-        "fs-logrotate-metric.sh": "Logrotate health metric",
-        "fs-doctor.sh --class class1": "Doctor — class1",
-        "fs-doctor.sh --class class2": "Doctor — class2",
-        "fs-doctor.sh --class class3": "Doctor — class3",
-        "fs-db-export.sh": "DB export",
-        "fs-runner.sh daily --class class1": "Backup runner — class1 (daily)",
-        "fs-runner.sh daily --class class2": "Backup runner — class2 (daily)",
-        "fs-runner.sh monthly --class class3": "Backup runner — class3 (monthly)",
-        "fs-mirror.sh daily": "Mirror — daily pass",
-        "fs-retention.sh": "Retention",
-        "fs-promote.sh": "Promote daily→weekly/monthly",
-        "fs-mirror.sh promote": "Mirror — promote pass",
-        "fs-mirror-retention.sh": "Mirror retention",
-        "fs-export-s3.sh": "S3 export",
-        "fs-annual-promote.sh": "Annual promote (Jan 5)",
-    }
-
-    entries = []
+def _s3_bucket_stats() -> dict | None:
+    """List all objects in the S3 bucket and return total count and size."""
     try:
-        lines = CRONTAB_FILE.read_text().splitlines()
+        s3 = s3_client()
+        paginator = s3.get_paginator("list_objects_v2")
+        total_size  = 0
+        total_count = 0
+        for page in paginator.paginate(Bucket=S3_BUCKET):
+            for obj in page.get("Contents", []):
+                total_size  += obj["Size"]
+                total_count += 1
+        return {"size": total_size, "count": total_count, "fmt_size": _humanize_bytes(total_size)}
     except Exception:
-        return entries
+        return None
 
-    for line in lines:
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        parts = stripped.split(None, 5)
-        if len(parts) < 6:
-            continue
-        schedule = " ".join(parts[:5])
-        command  = parts[5]
-        label = next(
-            (lbl for key, lbl in _LABELS.items() if key in command),
-            command.split("/")[-1],
-        )
-        entries.append({"schedule": schedule, "command": command, "label": label})
+
+def _load_schedule() -> list[dict]:
+    """Build timer schedule from fsbackup.conf (runner timers) and static timer values."""
+    conf_vars: dict[str, str] = {}
+    try:
+        for line in Path("/etc/fsbackup/fsbackup.conf").read_text().splitlines():
+            stripped = line.strip()
+            # Skip blank lines and comments (including commented-out assignments)
+            if not stripped or stripped.startswith("#"):
+                continue
+            if "=" not in stripped:
+                continue
+            key, _, val = stripped.partition("=")
+            conf_vars[key.strip()] = val.strip().strip('"')
+    except Exception:
+        pass
+
+    entries: list[dict] = []
+
+    # Runner timers — OnCalendar driven by CLASS*_SCHEDULE in fsbackup.conf
+    runner_map = [
+        ("Daily backup — class1",   "fsbackup-runner-daily@class1",   "CLASS1_DAILY_SCHEDULE"),
+        ("Weekly backup — class1",  "fsbackup-runner-weekly@class1",  "CLASS1_WEEKLY_SCHEDULE"),
+        ("Monthly backup — class1", "fsbackup-runner-monthly@class1", "CLASS1_MONTHLY_SCHEDULE"),
+        ("Daily backup — class2",   "fsbackup-runner-daily@class2",   "CLASS2_DAILY_SCHEDULE"),
+        ("Weekly backup — class2",  "fsbackup-runner-weekly@class2",  "CLASS2_WEEKLY_SCHEDULE"),
+        ("Monthly backup — class2", "fsbackup-runner-monthly@class2", "CLASS2_MONTHLY_SCHEDULE"),
+        ("Monthly backup — class3", "fsbackup-runner-monthly@class3", "CLASS3_MONTHLY_SCHEDULE"),
+    ]
+    for label, unit, conf_key in runner_map:
+        schedule = conf_vars.get(conf_key, "")
+        entries.append({
+            "label":    label,
+            "unit":     unit,
+            "schedule": schedule if schedule else "(disabled)",
+            "enabled":  bool(schedule),
+            "source":   "fsbackup.conf",
+        })
+
+    # Fixed timers — schedules defined in systemd unit files
+    for label, unit, schedule in [
+        ("Doctor — class1",    "fsbackup-doctor@class1",      "*-*-* 02:05"),
+        ("Doctor — class2",    "fsbackup-doctor@class2",      "*-*-* 02:05"),
+        ("Doctor — class3",    "fsbackup-doctor@class3",      "*-*-* 02:05"),
+        ("S3 export",          "fsbackup-s3-export",          "*-*-* 04:30"),
+        ("Retention (prune)",  "fsbackup-retention",          "*-*-* 06:00"),
+        ("ZFS pool scrub",     "fsbackup-scrub",              "*-*-05 03:00"),
+        ("Logrotate metric",   "fsbackup-logrotate-metric",   "daily"),
+    ]:
+        entries.append({
+            "label":    label,
+            "unit":     unit,
+            "schedule": schedule,
+            "enabled":  True,
+            "source":   "timer unit",
+        })
+
     return entries
 
 
@@ -923,7 +1024,8 @@ async def configuration_page(request: Request, tab: str = "hosts"):
     primary_disk["fmt_free"]  = _fmt_bytes(primary_disk["free"])
     primary_disk["fmt_total"] = _fmt_bytes(primary_disk["total"])
 
-    crontab = _load_crontab()
+    schedule = _load_schedule()
+    s3_stats = _s3_bucket_stats() if tab == "volumes" else None
 
     return _template_response("configuration.html", {
         "request":        request,
@@ -932,8 +1034,10 @@ async def configuration_page(request: Request, tab: str = "hosts"):
         "targets":        targets,
         "target_volumes": target_volumes,
         "primary_disk":   primary_disk,
-        "crontab":        crontab,
+        "schedule":       schedule,
+        "s3_stats":       s3_stats,
         "snapshot_root":  str(SNAPSHOT_ROOT),
+        "s3_bucket":      S3_BUCKET,
     })
 
 
@@ -980,12 +1084,12 @@ async def api_crontab_schedule(
         except Exception as e:
             error = str(e)
 
-    crontab = _load_crontab()
+    schedule = _load_schedule()
     return _template_response("partials/crontab_table.html", {
-        "request": request,
-        "crontab": crontab,
-        "saved":   saved,
-        "error":   error,
+        "request":  request,
+        "schedule": schedule,
+        "saved":    saved,
+        "error":    error,
     })
 
 

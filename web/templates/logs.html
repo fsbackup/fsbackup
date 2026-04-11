@@ -70,31 +70,33 @@
 
 {% if metrics %}
 <div class="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl overflow-hidden shadow-sm">
-  <table class="w-full text-sm">
-    <thead>
-      <tr class="text-left text-xs text-zinc-500 uppercase tracking-wider bg-zinc-50 dark:bg-zinc-800/50 border-b border-zinc-100 dark:border-zinc-800">
-        <th class="px-5 py-3 font-medium">Metric</th>
-        <th class="px-5 py-3 font-medium">Labels</th>
-        <th class="px-5 py-3 font-medium text-right">Value</th>
-      </tr>
-    </thead>
-    <tbody class="divide-y divide-zinc-100 dark:divide-zinc-800">
-      {% set ns = namespace(prev_file="") %}
-      {% for row in metrics %}
-        {% if row.file != ns.prev_file %}
-        <tr class="bg-zinc-50 dark:bg-zinc-800/30">
-          <td colspan="3" class="px-5 py-1.5 text-xs font-mono text-zinc-400">{{ row.file }}</td>
+  <div class="overflow-x-auto">
+    <table class="w-full min-w-[640px] text-sm">
+      <thead>
+        <tr class="text-left text-xs text-zinc-500 uppercase tracking-wider bg-zinc-50 dark:bg-zinc-800/50 border-b border-zinc-100 dark:border-zinc-800">
+          <th class="px-5 py-3 font-medium whitespace-nowrap">Metric</th>
+          <th class="px-5 py-3 font-medium">Labels</th>
+          <th class="px-5 py-3 font-medium text-right whitespace-nowrap">Value</th>
         </tr>
-        {% set ns.prev_file = row.file %}
-        {% endif %}
-        <tr class="hover:bg-zinc-50 dark:hover:bg-zinc-800/50 transition-colors">
-          <td class="px-5 py-2 font-mono text-xs text-zinc-700 dark:text-zinc-300" title="{{ row.help }}">{{ row.metric }}</td>
-          <td class="px-5 py-2 font-mono text-xs text-zinc-500">{{ row.labels or "—" }}</td>
-          <td class="px-5 py-2 font-mono text-xs text-zinc-900 dark:text-zinc-100 text-right">{{ row.value }}</td>
-        </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+      </thead>
+      <tbody class="divide-y divide-zinc-100 dark:divide-zinc-800">
+        {% set ns = namespace(prev_file="") %}
+        {% for row in metrics %}
+          {% if row.file != ns.prev_file %}
+          <tr class="bg-zinc-50 dark:bg-zinc-800/30">
+            <td colspan="3" class="px-5 py-1.5 text-xs font-mono text-zinc-400">{{ row.file }}</td>
+          </tr>
+          {% set ns.prev_file = row.file %}
+          {% endif %}
+          <tr class="hover:bg-zinc-50 dark:hover:bg-zinc-800/50 transition-colors">
+            <td class="px-5 py-2 font-mono text-xs text-zinc-700 dark:text-zinc-300 whitespace-nowrap" title="{{ row.help }}">{{ row.metric }}</td>
+            <td class="px-5 py-2 font-mono text-xs text-zinc-500 break-all max-w-xs">{{ row.labels or "—" }}</td>
+            <td class="px-5 py-2 font-mono text-xs text-zinc-900 dark:text-zinc-100 text-right whitespace-nowrap">{{ row.value }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
 </div>
 {% else %}
 <div class="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl p-8 text-center text-zinc-400 text-sm shadow-sm">
