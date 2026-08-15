@@ -112,6 +112,29 @@ echo "  Snap suffix:   @${SNAP_SUFFIX}"
 echo
 
 # -----------------------------------------------------------------------------
+# Auto-provision missing datasets
+# -----------------------------------------------------------------------------
+# The runner runs as fsbackup, which cannot create datasets itself — Linux ZFS
+# does not honor delegated mounts via `zfs allow` — so provisioning goes through
+# a sudoers drop-in scoped to fs-provision.sh (written by fs-install.sh step 5).
+
+PROVISION_NEEDED=0
+for t in "${TARGETS[@]}"; do
+  id="$(jq -r '.id' <<<"$t")"
+  [[ -d "${SNAPSHOT_ROOT}/${CLASS}/${id}" ]] || { PROVISION_NEEDED=1; break; }
+done
+
+if [[ "$PROVISION_NEEDED" -eq 1 ]]; then
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    log "provision" "dry-run: missing dataset(s) detected — would run fs-provision.sh"
+  elif sudo -n /opt/fsbackup/bin/fs-provision.sh >>"$LOG_FILE" 2>&1; then
+    log "provision" "missing dataset(s) detected — fs-provision.sh completed"
+  else
+    log "provision" "WARN: fs-provision.sh failed — missing datasets will be skipped (check sudoers drop-in)"
+  fi
+fi
+
+# -----------------------------------------------------------------------------
 # Load existing failure counters and last_success values
 # -----------------------------------------------------------------------------
 

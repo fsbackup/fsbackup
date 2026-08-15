@@ -178,6 +178,20 @@ else
     warn "sudoers syntax check failed — removing ${SUDOERS_FILE}"
     rm -f "$SUDOERS_FILE"
 fi
+
+# sudoers drop-in: allow fsbackup to run fs-provision.sh as root so the runner
+# can auto-provision datasets for newly added targets (dataset creation needs
+# root: Linux ZFS does not honor delegated mounts via zfs allow).
+SUDOERS_PROVISION_FILE="/etc/sudoers.d/fsbackup-provision"
+SUDOERS_PROVISION_LINE="${FSBACKUP_USER} ALL=(root) NOPASSWD: ${INSTALL_DIR}/bin/fs-provision.sh"
+echo "$SUDOERS_PROVISION_LINE" > "$SUDOERS_PROVISION_FILE"
+chmod 0440 "$SUDOERS_PROVISION_FILE"
+if visudo -c -f "$SUDOERS_PROVISION_FILE" &>/dev/null; then
+    ok "sudoers drop-in written: ${SUDOERS_PROVISION_FILE}"
+else
+    warn "sudoers syntax check failed — removing ${SUDOERS_PROVISION_FILE}"
+    rm -f "$SUDOERS_PROVISION_FILE"
+fi
 echo
 
 # ---------------------------------------------------------------------------
