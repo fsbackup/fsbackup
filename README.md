@@ -189,7 +189,7 @@ Repository path: **utils/**
 
 | Filename | Name | Description | Parameters |
 |----------|------|-------------|------------|
-| `fs-restore.sh` | Restore files | Browse available snapshots and restore files to a local path or push to a remote host over SSH. See the [Restore](#restore) section. | `list --class <class> [--type <type>]`; `restore --class <class> --id <id> [--date <key>\|--latest] --to <path>` |
+| `fs-restore.sh` | Restore files | Browse available snapshots and restore files to a local path or push to a remote host over SSH. See the [Restore](#restore) section. | `list --class <class> [--type <type>]`; `restore --class <class> --id <id> [--snapshot <name>\|--latest] --to <path>` |
 | `fs-trust-host.sh` | Seed SSH host keys | Adds a host's SSH key to the backup user's `known_hosts`. Run once when adding a new host. | `<hostname>` |
 | `fs-target-rename.sh` | Rename a target | Renames (or deletes) a ZFS dataset when a target ID changes in `targets.yml`. | `--class <class> --from <old-id> --to <new-id> --move\|--delete` |
 
@@ -343,13 +343,12 @@ All times are approximate; systemd timers use `RandomizedDelaySec` to avoid thun
 
 | Time | Job |
 |------|-----|
-| 01:17 | Doctor — class1 |
 | 01:40 | DB export — paperless |
-| 01:49 | Runner — class1 (daily) |
-| 02:05 | Doctor — class2 |
-| 02:15 | Runner — class2 (daily) |
-| 03:00 | Retention |
+| ~01:45 | Runner — class1 (daily) |
+| 02:05 | Doctor — class1 / class2 / class3 |
+| ~02:15 | Runner — class2 (daily) |
 | 04:30 | S3 export |
+| 06:00 | Retention |
 
 Weekly and monthly runner instances fire on the configured day/date (Monday for weekly, 1st of month for monthly). class3 runs monthly: doctor at 04:15, runner at 04:45 on the 1st.
 
@@ -447,7 +446,7 @@ sudo -u fsbackup /opt/fsbackup/utils/fs-restore.sh restore \
 # Restore from a specific snapshot
 sudo -u fsbackup /opt/fsbackup/utils/fs-restore.sh restore \
   --class class2 --id ns1.bind.named.conf \
-  --date 2026-W09 \
+  --snapshot weekly-2026-W09 \
   --to /tmp/restore/bind
 ```
 
@@ -468,9 +467,9 @@ sudo -u fsbackup /opt/fsbackup/utils/fs-restore.sh restore \
 |------|----------|-------------|
 | `--class` | yes | `class1`, `class2`, `class3` |
 | `--id` | yes (restore) | Target name as shown in `list` output |
-| `--type` | no | `daily`, `weekly`, or `monthly` (default: daily) |
+| `--type` | no | `daily`, `weekly`, or `monthly` (narrows `--latest`) |
 | `--latest` | one of | Use the most recent available snapshot |
-| `--date` | one of | Explicit snapshot key (`2026-03-29`, `2026-W13`, `2026-03`) |
+| `--snapshot` | one of | Exact snapshot name (`daily-2026-03-29`, `weekly-2026-W13`, `monthly-2026-03`) |
 | `--to` | one of | Local destination directory |
 | `--to-host` + `--to-path` | one of | Remote host and path (rsync over SSH) |
 

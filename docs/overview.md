@@ -1,79 +1,72 @@
 # fsbackup — System Overview
 
-fsbackup is a pull-based, disk-to-disk snapshot backup system built on rsync and
+fsbackup is a pull-based, disk-to-disk snapshot backup system built on ZFS, rsync, and
 systemd. The backup server connects out to each source host over SSH and pulls data
-inward. Snapshots are organized into tiers, mirrored to a secondary drive, and
-selectively exported offsite.
+inward into a per-target ZFS dataset, then takes a ZFS snapshot. Selected snapshots are
+exported offsite to S3 as encrypted archives.
 
 ---
 
 ## How it works
 
 **Snapshot pull**: the backup server initiates an SSH connection to each source host and
-runs rsync to pull the target directory into a local snapshot. Source hosts never push —
-they only need a `backup` user with the appropriate authorized key and read ACLs on the
-paths being backed up.
+runs rsync to pull the target directory into that target's ZFS dataset
+(`backup/snapshots/<class>/<target>`). Source hosts never push — they only need a
+`backup` user with the appropriate authorized key and read ACLs on the paths being
+backed up. Local targets (`host: fs`) are read directly from the local filesystem.
 
-**Tiers**: each snapshot run writes to a dated directory under a tier (`daily`,
-`weekly`, `monthly`, `annual`). Promotion copies daily snapshots forward into the weekly
-and monthly tiers using `rsync --link-dest`, which hard-links unchanged files so each
-tier looks like a complete copy while consuming only incremental disk space. Annual
-snapshots are promoted once a year from December monthly snapshots and made read-only.
+**ZFS snapshots**: after a successful rsync, the runner takes a ZFS snapshot on the
+target's dataset, named by type and date — `@daily-YYYY-MM-DD`, `@weekly-YYYY-Www`,
+`@monthly-YYYY-MM`. Unchanged blocks are shared automatically by ZFS copy-on-write, so
+each snapshot is a full point-in-time view that costs only the delta on disk. There are
+no dated tier directories and no hardlink bookkeeping — the type is just a prefix on the
+snapshot name, and each type is taken independently by its own runner timer.
 
-**Mirror**: after each run the primary snapshots are mirrored to a second drive using
-the same rsync hard-link approach, giving a physically separate on-site copy without
-doubling raw storage.
+**Retention**: `fs-retention.sh` keeps the newest N snapshots of each type per dataset
+(`KEEP_DAILY` / `KEEP_WEEKLY` / `KEEP_MONTHLY`) and destroys the rest with `zfs destroy`.
 
-**Offsite**: weekly, monthly, and annual snapshots are exported to S3 as
-`tar | zstd | age`-encrypted archives. M-DISC and USB are available for manual
-cold-storage copies.
+**On-disk redundancy**: physical redundancy is provided at the pool level (e.g. a ZFS
+mirror vdev), not by copying snapshots to a second directory tree. There is no separate
+mirror script in v2.0.
 
-**Classes** group targets by data type and snapshot frequency. The data flow through
-each stage (primary → mirror → offsite) is identical regardless of class — class only
-determines which targets run together and how often.
+**Offsite**: weekly and monthly snapshots are streamed as `tar | zstd | age` archives to
+S3 by `fs-export-s3.sh`. The `age` private key never touches the server, so S3 only ever
+holds ciphertext. Retention in S3 is handled by bucket lifecycle rules; the script never
+deletes. class3 is excluded from S3 by default and copied to USB / M-DISC manually.
+
+**Classes** group targets by data type and snapshot frequency. Class only determines
+which targets run together and how often — the data path (dataset → snapshot → S3) is the
+same for all of them.
 
 ---
 
 ## Data flow
 
 ```mermaid
-%%{init: {'flowchart': {'nodeSpacing': 80, 'rankSpacing': 150}}}%%
+%%{init: {'flowchart': {'nodeSpacing': 70, 'rankSpacing': 90}}}%%
 flowchart TD
-    subgraph src ["Sources"]
-        SRC["Source Host/Path"]
+    subgraph src ["Source hosts"]
+        SRC["Source path<br/>(remote over SSH, or local)"]
     end
 
-    subgraph primary ["/backup — primary — 8TB"]
-        PD["daily/"]
-        PW["weekly/"]
-        PM["monthly/"]
-        PA["annual/"]
-        PD -->|"promote"| PW
-        PD -->|"promote"| PM
-        PM -->|"promote annual<br/>(Jan 5)"| PA
+    subgraph primary ["ZFS pool — backup/snapshots"]
+        DS["dataset per target<br/>class/&lt;target&gt;"]
+        SNAP["ZFS snapshots<br/>@daily / @weekly / @monthly"]
+        DS -->|"zfs snapshot"| SNAP
     end
 
     subgraph offsite ["Offsite"]
         direction LR
-        S3["S3 bucket<br/>weekly + monthly + annual<br/>(age-encrypted)"]
-        COLD["M-DISC / USB<br/>annual + monthly<br/>(manual)"]
+        S3["S3 bucket<br/>weekly + monthly<br/>(zstd + age encrypted)"]
+        COLD["USB / M-DISC<br/>class3, manual"]
     end
 
-    subgraph mirror ["/backup2 — mirror — 2TB"]
-        MD["daily/"]
-        MW["weekly/"]
-        MM["monthly/"]
-        MA["annual/"]
-    end
-
-    SRC --> PD
-    primary -->|"mirror"| mirror
-    primary -->|"offsite"| S3
-    primary -.->|"manual"| COLD
+    SRC -->|"rsync over SSH"| DS
+    SNAP -->|"fs-export-s3.sh"| S3
+    SNAP -.->|"manual copy"| COLD
 
     style src fill:transparent,stroke:#aaa,stroke-width:1px
     style primary fill:transparent,stroke:#aaa,stroke-width:1px
-    style mirror fill:transparent,stroke:#aaa,stroke-width:1px
     style offsite fill:transparent,stroke:#aaa,stroke-width:1px
 ```
 
@@ -81,41 +74,41 @@ flowchart TD
 
 ## Features
 
-- **SSH pull**: the backup server initiates all connections; source hosts require no
-  outbound access and no backup agent software beyond a dedicated `backup` user
-- **Hard-linked tiers**: daily → weekly → monthly → annual promotion via
-  `rsync --link-dest`; each tier is a complete consistent snapshot, incremental on disk
-- **Idempotent runs**: safe to re-run at any time; existing content is not re-transferred
-  unless `--replace-existing` is specified
-- **Per-target granularity**: individual targets can be re-run, skipped, or excluded
-  without affecting other targets in the same class
-- **Mirror**: secondary on-site copy on a separate physical drive, with independent
-  retention; `MIRROR_SKIP_CLASSES` excludes classes from mirroring (e.g. large photo
-  archives)
-- **S3 export**: weekly/monthly/annual snapshots uploaded as compressed, encrypted
-  archives; idempotent (skips already-uploaded objects); IAM policy limits the upload
-  user to PutObject/GetObject/ListBucket only — no delete
-- **Database pre-export**: MariaDB/MySQL and PostgreSQL databases running in Docker can
-  be dumped to a local export directory before the snapshot run picks them up
-- **Prometheus metrics**: all scripts emit `.prom` files consumed by node_exporter;
-  full Grafana dashboard included
-- **Doctor**: pre-run health check that verifies SSH reachability, source path
-  existence, orphan detection, and annual snapshot immutability
+- **SSH pull**: the backup server initiates all connections; source hosts need no
+  outbound access and no agent beyond a dedicated read-only `backup` user.
+- **ZFS-native snapshots**: copy-on-write snapshots per target — space-efficient, instant,
+  and browsable read-only under `.zfs/snapshot/`.
+- **Per-target granularity**: any target can be re-run on its own
+  (`fs-runner.sh <type> --class <class> --target <id>`) without touching the rest.
+- **Auto-provisioning**: datasets for newly added targets are created automatically at the
+  start of the next runner run (via a scoped sudoers drop-in); the doctor flags any target
+  whose dataset does not exist yet.
+- **Configurable retention**: newest-N-per-type pruning with `zfs destroy`.
+- **Encrypted offsite export**: weekly/monthly snapshots uploaded to S3 as `age`-encrypted
+  archives; idempotent (skips objects already present); the IAM upload user is limited to
+  `PutObject`/`GetObject`/`ListBucket` — no delete.
+- **Database pre-export**: MariaDB/MySQL and PostgreSQL databases running in Docker are
+  dumped to a staging directory before the snapshot run picks them up.
+- **Prometheus metrics**: every script emits `.prom` textfile-collector files; a Grafana
+  dashboard is included.
+- **Doctor**: pre-run health check for SSH reachability, source-path existence, orphan
+  datasets, and missing datasets.
+- **Web UI**: FastAPI + HTMX dashboard for monitoring, snapshot browsing, on-demand runs,
+  restores, and an S3 bucket browser.
 
 ---
 
 ## Supported database exports
 
-`fs-db-export.sh` connects to a Docker container and exports a database to a
-compressed `.sql.gz` file. The export directory is then picked up by the regular
-rsync snapshot run.
+`fs-db-export.sh` connects to a Docker container and exports a database to a compressed
+file. The export directory is then picked up by the regular rsync snapshot run.
 
 | Engine | Method |
 |--------|--------|
 | MariaDB / MySQL | `docker exec` → `mariadb-dump` |
 | PostgreSQL | `docker exec` → `pg_dump` |
 
-Credentials and container details are stored in per-database `.env` files under
+Credentials and container details live in per-database `.env` files under
 `/etc/fsbackup/db/`. See `conf/db.env.example` for the required variables.
 
 ---
@@ -123,66 +116,69 @@ Credentials and container details are stored in per-database `.env` files under
 ## Prometheus metrics
 
 All scripts write `.prom` files to the node_exporter textfile collector directory
-(`/var/lib/node_exporter/textfile_collector/`). These are picked up on the next
-node_exporter scrape and exposed to Prometheus without any additional configuration.
+(`/var/lib/node_exporter/textfile_collector/`), picked up on the next scrape.
 
-**Runner metrics** (one file per class, e.g. `fsbackup_runner_class1.prom`):
+**Runner metrics** (`fsbackup_runner_<class>.prom`):
 
 | Metric | Description |
 |--------|-------------|
 | `fsbackup_snapshot_last_success{class,target}` | Unix timestamp of last successful snapshot |
-| `fsbackup_snapshot_bytes{class,target}` | Total size of snapshot directory in bytes |
+| `fsbackup_snapshot_last_failure{class,target}` | Unix timestamp of last failed attempt |
+| `fsbackup_snapshot_bytes{class,target}` | Size of the ZFS dataset in bytes |
 | `fsbackup_snapshot_files_total{class,target}` | File count from last rsync run |
-| `fsbackup_snapshot_files_created{class,target}` | Files added in last run |
-| `fsbackup_snapshot_files_deleted{class,target}` | Files removed in last run |
-| `fsbackup_snapshot_transferred_bytes{class,target}` | Bytes transferred in last run |
-| `fsbackup_runner_target_last_exit_code{class,target}` | rsync exit code (0 = success, 255 = SSH failure) |
-| `fsbackup_runner_target_failures_total{class,target}` | Cumulative failure count since last success |
+| `fsbackup_snapshot_files_created{class,target}` | Files added vs. previous snapshot |
+| `fsbackup_snapshot_files_deleted{class,target}` | Files removed vs. previous snapshot |
+| `fsbackup_snapshot_transferred_bytes{class,target}` | Bytes actually transferred (delta) |
+| `fsbackup_runner_target_last_seen{class,target}` | Timestamp of last run attempt |
+| `fsbackup_runner_target_last_exit_code{class,target}` | rsync exit code (0 = ok, 255 = SSH failure) |
+| `fsbackup_runner_target_failures_total{class,target}` | Cumulative failure count |
+| `fsbackup_runner_success{class}` | Targets that succeeded in the last full class run |
+| `fsbackup_runner_failed{class}` | Targets that failed in the last full class run |
 | `fsbackup_runner_last_exit_code{class}` | 0 if all targets succeeded, 1 if any failed |
+| `fsbackup_runner_run_scope{class}` | 1 = full class run, 0 = single-target run |
 
-**Doctor metrics** (`fsbackup_doctor_<class>.prom`):
+**Doctor metrics** (`fsbackup_doctor_<class>.prom`, plus shared orphan/health files):
 
 | Metric | Description |
 |--------|-------------|
-| `fsbackup_doctor_ssh_ok{class,target,host}` | 1 if SSH connection to host succeeded |
-| `fsbackup_doctor_path_ok{class,target,host}` | 1 if source path exists on remote host |
-| `fsbackup_orphan_snapshots_total{root}` | Count of snapshot directories with no matching target |
-| `fsbackup_annual_immutable{root}` | 1 if all annual snapshots are read-only (immutable) |
+| `fsbackup_orphan_snapshots_total` | Datasets whose target is no longer in `targets.yml`. Alert if > 0. |
+| `fsbackup_doctor_missing_datasets{class}` | Targets in `targets.yml` with no provisioned dataset |
 | `fsbackup_doctor_duration_seconds{class}` | Wall-clock seconds the doctor run took |
-| `fsbackup_node_exporter_textfile_access` | 1 if the textfile collector directory is writable |
+| `fsbackup_nodeexp_health` | 1 if the textfile collector directory is writable |
+| `fsbackup_ssh_host_key_present{host,fingerprint}` | 1 if the host's SSH key is trusted (written by `fs-trust-host.sh`) |
 
-**Mirror metrics** (`fsbackup_mirror_<mode>.prom`):
+**Retention metrics** (`fsbackup_retention.prom`):
 
 | Metric | Description |
 |--------|-------------|
-| `fsbackup_mirror_last_success{mode}` | Unix timestamp of last successful mirror run |
-| `fsbackup_mirror_last_exit_code{mode}` | 0 if mirror succeeded, 1 if any rsync failed |
-| `fsbackup_mirror_bytes_total{mode}` | Bytes transferred in last mirror run |
-| `fsbackup_mirror_duration_seconds{mode}` | Wall-clock seconds the mirror run took |
-
-`mode` is `daily` or `promote`.
+| `fsbackup_retention_last_run_seconds` | Unix timestamp of last retention run |
+| `fsbackup_retention_last_exit_code` | 0 if retention succeeded |
+| `fsbackup_retention_destroyed_total` | Snapshots destroyed in this run |
+| `fsbackup_retention_kept_total` | Snapshots kept (within policy) |
+| `fsbackup_retention_failed_total` | Snapshots that failed to destroy |
+| `fsbackup_retention_duration_seconds` | Duration of the retention run |
 
 **DB export metrics** (`fsbackup_db_export.prom`):
 
 | Metric | Description |
 |--------|-------------|
-| `fsbackup_db_export_success{db,engine,host}` | 1 if the last export succeeded, 0 if it failed |
-| `fsbackup_db_export_last_timestamp{db,engine,host}` | Unix timestamp of last successful export |
-| `fsbackup_db_export_size_bytes{db,engine,host}` | Compressed size of the export file in bytes |
+| `fsbackup_db_export_success{db,engine,host}` | 1 if the last export succeeded |
+| `fsbackup_db_export_last_timestamp{db,engine,host}` | Timestamp of last successful export |
+| `fsbackup_db_export_size_bytes{db,engine,host}` | Compressed size of the export file |
 
-**S3 export metrics** (`fsbackup_s3_export.prom`):
+**S3 export metrics** (`fsbackup_s3.prom`):
 
 | Metric | Description |
 |--------|-------------|
-| `fsbackup_s3_target_last_upload{tier,class,target}` | Unix timestamp of last successful upload for this target |
-| `fsbackup_s3_target_last_failure{tier,class,target}` | Unix timestamp of last failed upload for this target |
-| `fsbackup_s3_last_success` | Unix timestamp of last run where all uploads succeeded |
-| `fsbackup_s3_last_exit_code` | 0 if all targets succeeded, 1 if any failed |
-| `fsbackup_s3_uploaded_total` | Count of archives uploaded in last run |
-| `fsbackup_s3_skipped_total` | Count of archives skipped (already present in S3) |
-| `fsbackup_s3_failed_total` | Count of archives that failed to upload |
-| `fsbackup_s3_bytes_total` | Total bytes uploaded in last run |
-| `fsbackup_s3_duration_seconds` | Wall-clock seconds the S3 export run took |
+| `fsbackup_s3_last_success` | Unix timestamp of last run completion |
+| `fsbackup_s3_last_exit_code` | 0 if all uploads succeeded |
+| `fsbackup_s3_uploaded_total` | Archives uploaded in last run |
+| `fsbackup_s3_skipped_total` | Archives skipped (already in S3) |
+| `fsbackup_s3_failed_total` | Archives that failed to upload |
+| `fsbackup_s3_bytes_total` | Bytes uploaded in last run |
+| `fsbackup_s3_duration_seconds` | Duration of the S3 export run |
+| `fsbackup_s3_target_last_upload{tier,class,target}` | Timestamp of last successful upload per target |
+| `fsbackup_s3_target_last_failure{tier,class,target}` | Timestamp of last upload failure per target |
 
-A Grafana dashboard is included at `conf/grafana-dashboard.json`. The datasource UID
-in that file is instance-specific and must be remapped on import.
+A Grafana dashboard is included at `conf/grafana-dashboard.json`. The datasource UID in
+that file is instance-specific and must be remapped on import.

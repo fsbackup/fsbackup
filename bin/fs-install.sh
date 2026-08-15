@@ -48,7 +48,7 @@ info "Installing required packages..."
 apt-get update -qq
 apt-get install -y --no-install-recommends \
     rsync openssh-client jq zstd curl ca-certificates unzip \
-    python3 python3-venv acl zfsutils-linux sanoid \
+    python3 python3-venv acl zfsutils-linux \
     || die "apt-get failed"
 ok "Packages installed"
 

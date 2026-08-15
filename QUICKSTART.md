@@ -1,17 +1,21 @@
 # fsbackup – Quick Start
 
-This guide gets a new environment backing up in under 15 minutes.
-For full details see [docs/installation.md](docs/installation.md) and [docs/docker.md](docs/docker.md).
+This guide gets a new backup server running with the guided installer.
+For a step-by-step manual walkthrough see [docs/installation.md](docs/installation.md).
+
+fsbackup v2.0 runs bare-metal as the `fsbackup` system user under systemd timers.
+There is no Docker image and no supercronic — those were removed in v2.0.
 
 ---
 
 ## Prerequisites
 
-- Ubuntu/Debian Linux
-- Dedicated backup drive(s) mounted (e.g. `/backup`, `/backup2`)
-- `node_exporter` with textfile collector (optional, for Prometheus metrics)
-- **Docker deployment:** Docker Engine + Docker Compose v2
-- **Bare-metal deployment:** `rsync`, `openssh-client`
+- Ubuntu 24.04 (or Debian-based) with root access
+- A **ZFS pool** for backups, with a dataset at the snapshot root (default `backup/snapshots`)
+- `node_exporter` with the textfile collector enabled (optional, for Prometheus metrics)
+
+The installer pulls in the remaining dependencies (`rsync`, `openssh-client`, `jq`,
+`yq`, `zstd`, `acl`, `zfsutils-linux`, the AWS CLI, and Python for the web UI).
 
 ---
 
@@ -23,44 +27,36 @@ git clone https://github.com/fsbackup/fsbackup /home/<user>/fsbackup
 
 ---
 
-## 2. Create the fsbackup system user
+## 2. Run the installer
+
+`bin/fs-install.sh` is the one-shot installer. Run as root, it:
+
+- installs dependencies and creates the `fsbackup` system user (UID 993),
+- installs the scripts to `/opt/fsbackup`,
+- creates the config skeleton in `/etc/fsbackup`,
+- sets up ZFS delegation and the sudoers drop-ins,
+- installs and enables the systemd timers,
+- applies the schedule from `fsbackup.conf`, and
+- offers to set up the web UI.
 
 ```bash
-sudo useradd -r -m --uid 993 -d /var/lib/fsbackup -s /bin/bash fsbackup
+sudo /home/<user>/fsbackup/bin/fs-install.sh
 ```
 
-The UID **must be 993** to match the user baked into the Docker image. Use the same UID for bare-metal for consistency.
+It is idempotent — safe to re-run to pick up new scripts or units.
 
 ---
 
-## 3. Generate the SSH keypair
+## 3. Configure
+
+Edit the two config files the installer created:
 
 ```bash
-sudo -u fsbackup ssh-keygen -t ed25519 -f /var/lib/fsbackup/.ssh/id_ed25519_backup -N ""
+sudoedit /etc/fsbackup/fsbackup.conf   # SNAPSHOT_ROOT, schedules, retention, S3 bucket
+sudoedit /etc/fsbackup/targets.yml     # your backup targets
 ```
 
----
-
-## 4. Create directories
-
-```bash
-sudo mkdir -p /etc/fsbackup/db
-sudo mkdir -p /backup/snapshots/{daily,weekly,monthly,annual}
-sudo mkdir -p /backup2/snapshots/{daily,weekly,monthly,annual}
-sudo chown -R fsbackup:fsbackup /backup/snapshots /backup2/snapshots /var/lib/fsbackup
-```
-
----
-
-## 5. Configure
-
-```bash
-sudo cp /home/<user>/fsbackup/conf/fsbackup.conf.example /etc/fsbackup/fsbackup.conf
-sudo cp /home/<user>/fsbackup/conf/targets.yml.example /etc/fsbackup/targets.yml
-sudo cp /home/<user>/fsbackup/conf/fsbackup.crontab /etc/fsbackup/fsbackup.crontab
-```
-
-Edit `/etc/fsbackup/targets.yml` to define your backup targets. Example:
+A minimal target:
 
 ```yaml
 class2:
@@ -70,126 +66,50 @@ class2:
     type: dir
 ```
 
----
-
-## 6. Initialize remote hosts
-
-On each source host, run:
-
-```bash
-sudo /home/<user>/fsbackup/remote/fsbackup_remote_init.sh \
-  --pubkey-file /var/lib/fsbackup/.ssh/id_ed25519_backup.pub
-```
+See [docs/adding-hosts-and-targets.md](docs/adding-hosts-and-targets.md) for the full
+`targets.yml` reference.
 
 ---
 
-## 7a. Deploy with Docker (recommended)
+## 4. Trust remote hosts and provision datasets
 
-```bash
-mkdir -p /docker/stacks/fsbackup
-cp /home/<user>/fsbackup/conf/docker-compose.yml.example /docker/stacks/fsbackup/docker-compose.yml
-# Edit docker-compose.yml — set image tag, ports, volumes, extra_hosts
-cd /docker/stacks/fsbackup
-docker compose up -d
-```
-
-Trust remote SSH host keys:
-
-```bash
-docker exec -it fsbackup /opt/fsbackup/utils/fs-trust-host.sh <hostname>
-```
-
-See [docs/docker.md](docs/docker.md) for the full stack setup and volume reference.
-
----
-
-## 7b. Deploy bare-metal (without Docker)
-
-Copy scripts to the system path:
-
-```bash
-sudo cp -r /home/<user>/fsbackup/bin /opt/fsbackup/bin
-sudo cp -r /home/<user>/fsbackup/utils /opt/fsbackup/utils
-sudo cp -r /home/<user>/fsbackup/s3 /opt/fsbackup/s3
-sudo chmod -R 755 /opt/fsbackup
-```
-
-Trust remote SSH host keys:
+For each remote source host, seed its SSH host key and initialize the `backup` user:
 
 ```bash
 sudo /opt/fsbackup/utils/fs-trust-host.sh <hostname>
 ```
 
-Install systemd units and enable timers:
+Then run the remote init script **on the source host** (see
+[docs/adding-hosts-and-targets.md](docs/adding-hosts-and-targets.md)).
+
+Create the ZFS datasets for the targets you defined:
 
 ```bash
-sudo cp /home/<user>/fsbackup/systemd/*.service /etc/systemd/system/
-sudo cp /home/<user>/fsbackup/systemd/*.timer /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now \
-  fsbackup-doctor@class1.timer \
-  fsbackup-doctor@class2.timer \
-  fsbackup-runner@class1.timer \
-  fsbackup-runner@class2.timer \
-  fsbackup-mirror-daily.timer \
-  fsbackup-mirror-promote.timer \
-  fsbackup-retention.timer \
-  fsbackup-mirror-retention.timer \
-  fsbackup-promote.timer \
-  fsbackup-s3-export.timer \
-  fsbackup-annual-promote.timer
+sudo /opt/fsbackup/bin/fs-provision.sh
 ```
+
+(New targets added later are auto-provisioned at the start of the next runner run, so
+this manual step is only needed to provision immediately.)
 
 ---
 
-## 8. Verify with doctor
+## 5. Verify with doctor
 
-**Docker:**
-```bash
-docker exec -it fsbackup /opt/fsbackup/bin/fs-doctor.sh --class class1
-docker exec -it fsbackup /opt/fsbackup/bin/fs-doctor.sh --class class2
-```
-
-**Bare-metal:**
 ```bash
 sudo -u fsbackup /opt/fsbackup/bin/fs-doctor.sh --class class1
 sudo -u fsbackup /opt/fsbackup/bin/fs-doctor.sh --class class2
 ```
 
-All targets must show `OK`.
+All targets must show `OK`. Resolve any `FAIL` before running the runner.
 
 ---
 
-## 9. Run first snapshot
+## 6. Run the first snapshot
 
-**Docker:**
-```bash
-docker exec -it fsbackup /opt/fsbackup/bin/fs-runner.sh daily --class class1 --dry-run
-docker exec -it fsbackup /opt/fsbackup/bin/fs-runner.sh daily --class class1
-```
-
-**Bare-metal:**
 ```bash
 sudo -u fsbackup /opt/fsbackup/bin/fs-runner.sh daily --class class1 --dry-run
 sudo -u fsbackup /opt/fsbackup/bin/fs-runner.sh daily --class class1
 ```
 
----
-
-## Daily schedule
-
-| Time | Job |
-|------|-----|
-| 01:15 | `fs-doctor.sh --class class1` |
-| 01:40 | `fs-db-export.sh` (if configured) |
-| 01:45 | `fs-runner.sh daily --class class1` |
-| 02:05 | `fs-doctor.sh --class class2` |
-| 02:15 | `fs-runner.sh daily --class class2` |
-| 02:30 | `fs-mirror.sh daily` |
-| 03:00 | `fs-retention.sh` |
-| 03:30 | `fs-promote.sh` |
-| 03:40 | `fs-mirror.sh promote` |
-| 04:00 | `fs-mirror-retention.sh` |
-| 04:30 | `fs-export-s3.sh` |
-| 04:45 (1st of month) | `fs-runner.sh monthly --class class3` |
-| 03:00 (Jan 5) | `fs-annual-promote.sh` |
+From here the systemd timers take over on the schedule defined in `fsbackup.conf`.
+See [docs/reference.md](docs/reference.md#timer-schedule) for the full timer list.
