@@ -108,9 +108,9 @@ def parse_snapshot_date(tier: str, date_str: str) -> date | None:
         if tier == "daily":
             return datetime.strptime(date_str, "%Y-%m-%d").date()
         elif tier == "weekly":
-            # YYYY-Www  e.g. 2025-W03
+            # ISO week: YYYY-Www  e.g. 2025-W03 (matches `date +%G-W%V` in fs-runner.sh)
             year, week = date_str.split("-W")
-            return datetime.strptime(f"{year}-W{week}-1", "%Y-W%W-%w").date()
+            return date.fromisocalendar(int(year), int(week), 1)
         elif tier == "monthly":
             return datetime.strptime(date_str, "%Y-%m").date()
         elif tier == "annual":
@@ -497,11 +497,11 @@ async def browse_page(request: Request, path: str = ""):
     browse_path = None
 
     if path:
-        browse_path = Path(path)
-        # Safety: must be under SNAPSHOT_ROOT
-        try:
-            browse_path.relative_to(SNAPSHOT_ROOT)
-        except ValueError:
+        # Safety: resolve symlinks/.. first, then require the real path to be
+        # under SNAPSHOT_ROOT (a bare relative_to() check is lexical and lets
+        # ../ escape the root).
+        browse_path = Path(path).resolve()
+        if not browse_path.is_relative_to(SNAPSHOT_ROOT):
             error = "Path is outside snapshot root."
             browse_path = None
 
@@ -1206,10 +1206,9 @@ async def api_browse(request: Request, path: str = ""):
     error   = None
 
     if path:
-        browse_path = Path(path)
-        try:
-            browse_path.relative_to(SNAPSHOT_ROOT)
-        except ValueError:
+        # Resolve before the containment check so ../ cannot escape the root.
+        browse_path = Path(path).resolve()
+        if not browse_path.is_relative_to(SNAPSHOT_ROOT):
             error = "Path is outside snapshot root."
             browse_path = None
 
