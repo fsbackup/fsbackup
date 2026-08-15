@@ -23,8 +23,3 @@
 {{ tail_div("tail-runner-" ~ cls, tails.get("runner-" ~ cls, [])) }}
 {{ tail_div("tail-doctor-" ~ cls, tails.get("doctor-" ~ cls, [])) }}
 {% endfor %}
-
-<span id="status-promote" hx-swap-oob="true">{{ badge_inner(promote_status) }}</span>
-<span id="status-mirror"  hx-swap-oob="true">{{ badge_inner(mirror_status) }}</span>
-{{ tail_div("tail-promote", tails.get("promote", [])) }}
-{{ tail_div("tail-mirror",  tails.get("mirror",  [])) }}

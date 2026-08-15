@@ -38,7 +38,6 @@ SRC_BIN_DIR="${BOOTSTRAP_DIR}/bin"
 REQUIRED_BINS=(
   fs-runner.sh
   fs-doctor.sh
-  fs-promote.sh
   fs-retention.sh
   fs-restore.sh
   fs-nodeexp-fix.sh
