@@ -31,7 +31,6 @@ from starlette.middleware.sessions import SessionMiddleware
 SNAPSHOT_ROOT = Path(os.environ.get("SNAPSHOT_ROOT", "/backup/snapshots"))
 TARGETS_FILE  = Path(os.environ.get("TARGETS_FILE",  "/etc/fsbackup/targets.yml"))
 SCRIPTS_DIR   = Path(os.environ.get("SCRIPTS_DIR",   "/opt/fsbackup"))
-CRONTAB_FILE  = Path(os.environ.get("CRONTAB_FILE",  "/etc/fsbackup/fsbackup.crontab"))
 PROM_DIR      = Path(os.environ.get("PROM_DIR",      "/var/lib/node_exporter/textfile_collector"))
 
 # Retention policy (days) per tier — used to compute expiration dates
@@ -280,7 +279,6 @@ def list_orphan_datasets() -> list[dict]:
 
 def _build_job_commands() -> dict[str, list[str]]:
     b = SCRIPTS_DIR / "bin"
-    s = SCRIPTS_DIR / "s3"
     return {
         "runner-class1": [str(b / "fs-runner.sh"), "daily",   "--class", "class1"],
         "runner-class2": [str(b / "fs-runner.sh"), "daily",   "--class", "class2"],
@@ -288,8 +286,6 @@ def _build_job_commands() -> dict[str, list[str]]:
         "doctor-class1": [str(b / "fs-doctor.sh"), "--class", "class1"],
         "doctor-class2": [str(b / "fs-doctor.sh"), "--class", "class2"],
         "doctor-class3": [str(b / "fs-doctor.sh"), "--class", "class3"],
-        "promote":       [str(b / "fs-promote.sh")],
-        "mirror":        [str(b / "fs-mirror.sh"), "daily"],
     }
 
 _JOB_COMMANDS = _build_job_commands()
@@ -616,16 +612,12 @@ async def run_page(request: Request):
             "runner": _job_status(f"runner-{cls}"),
             "doctor": _job_status(f"doctor-{cls}"),
         }
-    promote_status = _job_status("promote")
-    mirror_status  = _job_status("mirror")
     tails = {key: _job_tail(key) for key in _JOB_COMMANDS}
 
     return templates.TemplateResponse("run.html", {
         "request":        request,
         "units":          units,
         "classes":        CLASSES,
-        "promote_status": promote_status,
-        "mirror_status":  mirror_status,
         "tails":          tails,
     })
 
@@ -639,15 +631,11 @@ async def api_run_status(request: Request):
             "runner": _job_status(f"runner-{cls}"),
             "doctor": _job_status(f"doctor-{cls}"),
         }
-    promote_status = _job_status("promote")
-    mirror_status  = _job_status("mirror")
     tails = {key: _job_tail(key) for key in _JOB_COMMANDS}
     return templates.TemplateResponse("partials/run_status.html", {
-        "request":        request,
-        "units":          units,
-        "promote_status": promote_status,
-        "mirror_status":  mirror_status,
-        "tails":          tails,
+        "request": request,
+        "units":   units,
+        "tails":   tails,
     })
 
 
@@ -1041,58 +1029,6 @@ async def configuration_page(request: Request, tab: str = "hosts"):
     })
 
 
-@app.post("/api/config/crontab/schedule", response_class=HTMLResponse)
-async def api_crontab_schedule(
-    request: Request,
-    command:  str = Form(...),
-    schedule: str = Form(...),
-):
-    """Update the cron schedule for a single job identified by its command string."""
-    error = ""
-    saved = False
-
-    # Validate: must be exactly 5 whitespace-separated fields, no newlines or semicolons
-    fields = schedule.strip().split()
-    if len(fields) != 5:
-        error = "Schedule must be exactly 5 fields (minute hour day month weekday)"
-    elif any(c in schedule for c in (";", "\n", "\r", "|", "`", "$")):
-        error = "Invalid characters in schedule expression"
-
-    if not error:
-        try:
-            lines = CRONTAB_FILE.read_text().splitlines()
-            new_lines = []
-            matched = False
-            for line in lines:
-                stripped = line.strip()
-                if not stripped or stripped.startswith("#"):
-                    new_lines.append(line)
-                    continue
-                parts = stripped.split(None, 5)
-                if len(parts) == 6 and parts[5] == command:
-                    new_lines.append(f"{schedule} {command}")
-                    matched = True
-                else:
-                    new_lines.append(line)
-            if not matched:
-                error = f"Job not found in crontab: {command}"
-            else:
-                tmp = CRONTAB_FILE.with_suffix(".crontab.tmp")
-                tmp.write_text("\n".join(new_lines) + "\n")
-                os.replace(tmp, CRONTAB_FILE)
-                saved = True
-        except Exception as e:
-            error = str(e)
-
-    schedule = _load_schedule()
-    return _template_response("partials/crontab_table.html", {
-        "request":  request,
-        "schedule": schedule,
-        "saved":    saved,
-        "error":    error,
-    })
-
-
 @app.get("/s3", response_class=HTMLResponse)
 async def s3_page(request: Request, prefix: str = ""):
     """S3 bucket browser. prefix is a key prefix like 'weekly/class1/myapp/'."""
@@ -1356,7 +1292,7 @@ async def api_rename_target(
 @app.post("/api/run/{action}", response_class=HTMLResponse)
 async def api_run(request: Request, action: str, cls: str = Form(default="")):
     """
-    Trigger a backup job. action: runner | doctor | promote | mirror
+    Trigger a backup job. action: runner | doctor
     Spawns the script directly as a subprocess; output streamed into an
     in-memory deque visible via the status poller. No systemd dependency.
     """

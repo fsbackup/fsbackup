@@ -11,7 +11,7 @@ set -o pipefail
 #   weekly  → @weekly-YYYY-Www
 #   monthly → @monthly-YYYY-MM
 #
-# Retention is managed by sanoid, not this script.
+# Retention is managed by fs-retention.sh (custom-named snapshots), not this script.
 # =============================================================================
 
 . /etc/fsbackup/fsbackup.conf
