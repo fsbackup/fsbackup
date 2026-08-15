@@ -75,6 +75,15 @@ code 23 and `Permission denied` errors in the journal.
 sudo -u fsbackup /opt/fsbackup/bin/fs-doctor.sh --class class2
 ```
 
+The ZFS dataset for a new target is created automatically at the start of the
+runner's next scheduled run (`fs-provision.sh` via a sudoers drop-in), and the
+doctor flags any target whose dataset does not exist yet. To provision
+immediately instead of waiting for the next run:
+
+```bash
+sudo /opt/fsbackup/bin/fs-provision.sh
+```
+
 ---
 
 ## Adding a new remote host

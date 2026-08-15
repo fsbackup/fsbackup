@@ -59,6 +59,7 @@ SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=5)
 PASS=0
 FAIL=0
 WARN=0
+MISSING_DATASETS=0
 
 echo
 echo "fsbackup doctor"
@@ -79,6 +80,13 @@ for t in "${TARGETS[@]}"; do
   if [[ -z "$id" || -z "$host" || -z "$src" ]]; then
     printf "%-28s %-6s %s\n" "${id:-<unknown>}" "WARN" "invalid target entry"
     ((WARN++))
+    continue
+  fi
+
+  if [[ ! -d "${PRIMARY_SNAPSHOT_ROOT}/${CLASS}/${id}" ]]; then
+    printf "%-28s %-6s %s\n" "$id" "WARN" "dataset not provisioned (runner will auto-provision)"
+    ((WARN++))
+    ((MISSING_DATASETS++))
     continue
   fi
 
@@ -151,6 +159,9 @@ cat >"$tmp" <<EOF
 # HELP fsbackup_doctor_duration_seconds Duration of fsbackup doctor run
 # TYPE fsbackup_doctor_duration_seconds gauge
 fsbackup_doctor_duration_seconds{class="$CLASS"} ${DURATION}
+# HELP fsbackup_doctor_missing_datasets Targets in targets.yml with no provisioned dataset
+# TYPE fsbackup_doctor_missing_datasets gauge
+fsbackup_doctor_missing_datasets{class="$CLASS"} ${MISSING_DATASETS}
 EOF
 chgrp nodeexp_txt "$tmp" 2>/dev/null || true
 chmod 0644 "$tmp"
