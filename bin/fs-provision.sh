@@ -84,6 +84,11 @@ while IFS= read -r entry; do
       CREATED=$((CREATED + 1))
     else
       if zfs create -p "$dataset"; then
+        # zfs create leaves the mountpoint root-owned; the runner rsyncs into
+        # it as the fsbackup user and fails with EACCES unless we chown it
+        mnt="$(zfs get -H -o value mountpoint "$dataset")"
+        chown fsbackup:fsbackup "$mnt" \
+          || echo "  WARN  could not chown $mnt to fsbackup — runner will fail until fixed"
         printf "  %-8s %-12s %s\n" "CREATED" "[$cls]" "$dataset"
         CREATED=$((CREATED + 1))
       else
