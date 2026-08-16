@@ -2,14 +2,17 @@
 """fsbackup web UI — FastAPI + HTMX + Tailwind"""
 
 import os
+import re
 import secrets
 import shutil
 import subprocess
 import threading
+import time
 import yaml
 from collections import deque
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
@@ -19,7 +22,7 @@ from botocore.config import Config as BotoConfig
 from botocore.exceptions import BotoCoreError, ClientError
 
 from fastapi import FastAPI, Request, Form
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
@@ -69,23 +72,106 @@ def s3_client():
 SECRET_KEY        = os.environ.get("SECRET_KEY", secrets.token_hex(32))
 AUTH_ENABLED      = os.environ.get("AUTH_ENABLED", "true").lower() not in ("false", "0", "no")
 AUTH_PASSWORD_HASH = os.environ.get("AUTH_PASSWORD_HASH", "")
+# Optional: if set, the login username must also match (in addition to the password).
+# Left empty by default for backward compatibility (any username is accepted).
+AUTH_USERNAME     = os.environ.get("AUTH_USERNAME", "")
+# Mark the session cookie Secure when the UI is served over HTTPS.
+SESSION_COOKIE_SECURE = os.environ.get("SESSION_COOKIE_SECURE", "false").lower() in ("true", "1", "yes")
+
+# Login throttling — per client IP, in-memory (single-process app).
+LOGIN_MAX_ATTEMPTS = 5     # failures within the window before lockout
+LOGIN_WINDOW_SEC   = 300   # rolling window for counting failures
+LOGIN_LOCKOUT_SEC  = 300   # lockout duration after the window fills
 
 app = FastAPI(title="fsbackup")
 app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
 templates = Jinja2Templates(directory=Path(__file__).parent / "templates")
 
 _PUBLIC_PATHS = {"/login"}
+_SAFE_METHODS = {"GET", "HEAD", "OPTIONS", "TRACE"}
+
+
+def _same_origin(request: Request) -> bool:
+    """CSRF guard for state-changing requests: require the Origin (or Referer)
+    header's host to match the request's Host header. Browsers set Origin on
+    cross-site POSTs, so a forged cross-site submission fails this check. Combined
+    with the SameSite=lax session cookie, this blocks CSRF without per-form tokens.
+    Requests with neither header are rejected (this is a browser-only UI)."""
+    origin = request.headers.get("origin") or request.headers.get("referer")
+    if not origin:
+        return False
+    return urlsplit(origin).netloc == request.headers.get("host", "")
+
+
+def _safe_next(nxt: str) -> str:
+    """Only allow local absolute paths as post-login redirect targets, to prevent
+    open redirects via ?next=. Rejects absolute URLs and protocol-relative //host."""
+    if nxt and nxt.startswith("/") and not nxt.startswith("//"):
+        return nxt
+    return "/"
+
+
+_TARGET_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _valid_target_id(s: str) -> bool:
+    """Target IDs are dataset name components passed to `sudo fs-target-rename.sh`.
+    Restrict them to a safe charset (letters, digits, dot, dash, underscore) so a
+    crafted value can't traverse to or target an unintended ZFS dataset."""
+    return bool(s) and _TARGET_ID_RE.match(s) is not None
+
+
+# Login throttle state — per client IP (monotonic failure timestamps).
+_login_lock = threading.Lock()
+_login_fails: dict[str, list[float]] = {}
+
+
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+def _login_lockout_remaining(ip: str) -> float:
+    """Seconds left on this IP's lockout, or 0 if it may attempt a login."""
+    now = time.monotonic()
+    with _login_lock:
+        fails = [t for t in _login_fails.get(ip, []) if now - t < LOGIN_WINDOW_SEC]
+        _login_fails[ip] = fails
+        if len(fails) >= LOGIN_MAX_ATTEMPTS:
+            return max(0.0, LOGIN_LOCKOUT_SEC - (now - fails[-1]))
+    return 0.0
+
+
+def _login_record_failure(ip: str) -> None:
+    with _login_lock:
+        _login_fails.setdefault(ip, []).append(time.monotonic())
+
+
+def _login_clear(ip: str) -> None:
+    with _login_lock:
+        _login_fails.pop(ip, None)
+
 
 @app.middleware("http")
-async def require_login(request: Request, call_next):
+async def security_gate(request: Request, call_next):
+    # CSRF: reject state-changing requests with a missing/foreign Origin.
+    if request.method not in _SAFE_METHODS and not _same_origin(request):
+        return PlainTextResponse("CSRF check failed", status_code=403)
+    # Auth: redirect unauthenticated users to the login page.
     if AUTH_ENABLED and request.url.path not in _PUBLIC_PATHS and not request.url.path.startswith("/static/") and not request.session.get("user"):
         return RedirectResponse(url=f"/login?next={request.url.path}", status_code=302)
     response = await call_next(request)
     return response
 
-# SessionMiddleware must be added AFTER require_login so it is outermost
+# SessionMiddleware must be added AFTER security_gate so it is outermost
 # (Starlette middleware is LIFO — last added = first executed)
-app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY, session_cookie="fsbackup_session", max_age=86400)
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=SECRET_KEY,
+    session_cookie="fsbackup_session",
+    max_age=86400,
+    same_site="lax",
+    https_only=SESSION_COOKIE_SECURE,
+)
 
 # Use a custom TemplateResponse wrapper so every render gets `now`
 # Starlette 1.0 changed signature to TemplateResponse(request, name, context)
@@ -321,24 +407,42 @@ def _job_tail(key: str) -> list[str]:
 
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request, next: str = "/"):
+    safe_next = _safe_next(next)
     if request.session.get("user"):
-        return RedirectResponse(url=next, status_code=302)
-    return templates.TemplateResponse("login.html", {"request": request, "next": next, "error": ""})
+        return RedirectResponse(url=safe_next, status_code=302)
+    return templates.TemplateResponse("login.html", {"request": request, "next": safe_next, "error": ""})
 
 
 @app.post("/login", response_class=HTMLResponse)
 async def login_submit(request: Request, username: str = Form(...), password: str = Form(...), next: str = Form(default="/")):
     import bcrypt
+    safe_next = _safe_next(next)
+    ip = _client_ip(request)
+
+    remaining = _login_lockout_remaining(ip)
+    if remaining > 0:
+        return templates.TemplateResponse("login.html", {
+            "request": request, "next": safe_next,
+            "error": f"Too many failed attempts. Try again in {int(remaining) + 1}s.",
+        })
+
     ok = False
     if AUTH_PASSWORD_HASH:
         try:
-            ok = bcrypt.checkpw(password.encode(), AUTH_PASSWORD_HASH.encode())
+            pw_ok = bcrypt.checkpw(password.encode(), AUTH_PASSWORD_HASH.encode())
         except Exception:
-            ok = False
+            pw_ok = False
+        # If AUTH_USERNAME is set, the username must match too (constant-time).
+        user_ok = (not AUTH_USERNAME) or secrets.compare_digest(username, AUTH_USERNAME)
+        ok = pw_ok and user_ok
+
     if ok:
+        _login_clear(ip)
         request.session["user"] = username
-        return RedirectResponse(url=next or "/", status_code=302)
-    return templates.TemplateResponse("login.html", {"request": request, "next": next, "error": "Invalid username or password."})
+        return RedirectResponse(url=safe_next, status_code=302)
+
+    _login_record_failure(ip)
+    return templates.TemplateResponse("login.html", {"request": request, "next": safe_next, "error": "Invalid username or password."})
 
 
 @app.get("/logout")
@@ -1243,18 +1347,25 @@ async def api_rename_target(
     result_msg = ""
     result_ok  = False
 
+    from_id = from_id.strip()
+    to_id   = to_id.strip()
+
     if _jobs.get(key, {}).get("status") == "running":
         result_msg = "A rename is already running"
     elif mode not in ("move", "delete"):
         result_msg = "Invalid mode — must be move or delete"
-    elif not from_id.strip() or not to_id.strip():
-        result_msg = "from and to target IDs are required"
+    elif cls not in CLASSES:
+        result_msg = "Invalid class"
+    elif not _valid_target_id(from_id):
+        result_msg = "Invalid 'from' target ID"
+    elif mode == "move" and not _valid_target_id(to_id):
+        result_msg = "Invalid 'to' target ID"
     else:
         script = SCRIPTS_DIR / "utils" / "fs-target-rename.sh"
         cmd = ["sudo", str(script),
                "--class", cls,
-               "--from",  from_id.strip(),
-               "--to",    to_id.strip(),
+               "--from",  from_id,
+               "--to",    to_id,
                f"--{mode}"]
         if dry_run == "1":
             cmd.append("--dry-run")
