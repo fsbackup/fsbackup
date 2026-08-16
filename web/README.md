@@ -161,10 +161,32 @@ running under systemd, you can use `EnvironmentFile=` in the unit file instead.
 | `AUTH_USERNAME` | *(unset)* | If set, the login username must match this too; empty = any username accepted |
 | `SECRET_KEY` | *(random)* | Session-cookie signing key; set a stable value to keep sessions across restarts |
 | `SESSION_COOKIE_SECURE` | `false` | Mark the session cookie `Secure` when served over HTTPS |
+| `PROXY_TRUSTED_IPS` | *(unset)* | Reverse-proxy IP(s) whose `X-Forwarded-*` headers to trust (comma-separated, or `*`); makes the login throttle see real client IPs |
 
 > `HOST` and `PORT` are read by the `if __name__ == "__main__"` entrypoint in
 > `main.py`. If you start the app via `uvicorn main:app` directly on the command
 > line, pass `--host` and `--port` explicitly or export the variables first.
+
+### Behind a reverse proxy
+
+When the UI is served through a reverse proxy (TLS termination, an internal
+hostname, etc.), set two things in `web/.env`:
+
+```bash
+PROXY_TRUSTED_IPS=10.0.0.5     # the proxy's IP; the app trusts its X-Forwarded-* headers
+SESSION_COOKIE_SECURE=true     # the browser leg is HTTPS
+```
+
+`PROXY_TRUSTED_IPS` makes `request.client.host` the real client IP, so the login
+throttle buckets per client instead of locking out everyone behind the proxy. The
+proxy must forward the original **Host** header (the CSRF check compares it against
+the request's `Origin`), plus `X-Forwarded-For` and `X-Forwarded-Proto`. For nginx:
+
+```nginx
+proxy_set_header Host              $host;
+proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+proxy_set_header X-Forwarded-Proto $scheme;
+```
 
 ---
 
