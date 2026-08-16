@@ -28,7 +28,7 @@ What actually happened.
 
 ## Relevant log output
 ```
-# paste output from /var/lib/fsbackup/log/ or docker logs fsbackup
+# paste output from /var/lib/fsbackup/log/ or `journalctl -u fsbackup-<unit>`
 ```
 
 ## Additional context
