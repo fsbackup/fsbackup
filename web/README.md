@@ -35,7 +35,7 @@ web/
     targets_edit.html    # Raw targets.yml editor
     browse.html          # Filesystem browser inside a snapshot
     restore.html         # Restore form
-    run.html             # Trigger runner/doctor/promote/mirror jobs
+    run.html             # Trigger runner/doctor jobs; live status + log tail
     s3.html              # S3 offsite bucket browser
     configuration.html   # Tabbed configuration page (Hosts, Targets, Schedule, Volumes)
     utilities.html       # Stub — redirects to Configuration and Restore
@@ -67,7 +67,7 @@ step and no Node.js requirement.
 | `GET /` | Dashboard | Class status cards read from `.prom` metric files |
 | `GET /snapshots` | Snapshots | Filterable table of all local snapshots; defaults to daily tier + today |
 | `GET /restore` | Restore | Restore form with recent-snapshot quick-select sidebar |
-| `GET /run` | Run | Trigger runner/doctor per class, promote, mirror |
+| `GET /run` | Run | Trigger runner/doctor per class; live status + log tail |
 | `GET /s3` | S3 Offsite | Prefix-based S3 bucket browser with presigned download |
 | `GET /configuration` | Configuration | Tabbed page: Hosts, Targets, Schedule, Volumes & Maintenance |
 | `GET /targets` | Targets | Parsed view of `/etc/fsbackup/targets.yml` (also in Configuration > Targets tab) |
@@ -81,8 +81,8 @@ step and no Node.js requirement.
 |-----|-------------|
 | Hosts | Lists all unique hosts from `targets.yml`; instructions for trusting a new host's SSH key via `fs-trust-host.sh` |
 | Targets | Targets table grouped by class; link to edit `targets.yml`; rename instructions via `fs-target-rename.sh` |
-| Schedule | Read-only view of all jobs in `fsbackup.crontab` with human-readable labels and cron expressions |
-| Volumes & Maintenance | Disk usage for `/backup` and `/backup2`; annual mirror check instructions; node exporter troubleshooting |
+| Schedule | Read-only view of the systemd timers — runner schedules from `fsbackup.conf` plus the fixed timers — with their `OnCalendar` expressions |
+| Volumes & Maintenance | ZFS usage for the snapshot root, per-target dataset sizes, and S3 bucket object count/size; node exporter troubleshooting |
 
 ### HTMX partial endpoints
 
@@ -98,25 +98,19 @@ step and no Node.js requirement.
 
 ## How scripts and services are called
 
-### Systemd (Run page)
+### Jobs (Run page)
 
-`POST /api/run/{action}` runs:
+`POST /api/run/{action}` spawns the relevant `bin/` script **directly** as a
+subprocess (`fs-runner.sh` / `fs-doctor.sh`) — there is no `systemctl` or systemd
+dependency. Output is streamed into an in-memory buffer and polled by the page via
+`GET /api/run/status`. Because the scripts run as the same user as the web process
+(`fsbackup`), no sudo is needed for runner/doctor.
 
-```python
-subprocess.run(["systemctl", "start", "<unit>"], ...)
-```
+Two actions do use `sudo` via scoped drop-ins:
 
-The process running the web UI must be able to call `systemctl start` for the
-fsbackup units. If running as the `fsbackup` user, add sudoers entries:
-
-```
-fsbackup ALL=(root) NOPASSWD: /bin/systemctl start fsbackup-runner@*.service
-fsbackup ALL=(root) NOPASSWD: /bin/systemctl start fsbackup-doctor@*.service
-fsbackup ALL=(root) NOPASSWD: /bin/systemctl start fsbackup-promote.service
-fsbackup ALL=(root) NOPASSWD: /bin/systemctl start fsbackup-mirror-daily.service
-```
-
-Then update the `api_run` handler to prepend `sudo` to the command.
+- **Orphan delete** (`POST /api/orphans/delete`) → `sudo zfs destroy -r <dataset>`
+  (`/etc/sudoers.d/fsbackup-zfs-destroy`).
+- **Rename target** (`POST /api/run/rename-target`) → `sudo fs-target-rename.sh …`.
 
 ### S3 (S3 Offsite page)
 
@@ -129,8 +123,8 @@ Presigned URLs expire after `PRESIGN_TTL` seconds (default: 3600).
 
 ### Restore (Restore page)
 
-`POST /api/run/restore` runs rsync directly. The snapshot path is validated
-against `SNAPSHOT_ROOT` and `MIRROR_ROOT` before execution. Dry-run mode
+`POST /api/run/restore` runs rsync directly. The snapshot path is resolved and
+validated to be within `SNAPSHOT_ROOT` before execution. Dry-run mode
 (default: on) passes `--dry-run --stats` to rsync and displays a preview without
 modifying any files.
 
@@ -156,14 +150,15 @@ running under systemd, you can use `EnvironmentFile=` in the unit file instead.
 |----------|---------|-------------|
 | `HOST` | `0.0.0.0` | Address to bind to |
 | `PORT` | `8080` | Port to listen on |
-| `SNAPSHOT_ROOT` | `/backup/snapshots` | Primary snapshot directory |
-| `MIRROR_ROOT` | `/backup2/snapshots` | Mirror snapshot directory |
+| `SNAPSHOT_ROOT` | `/backup/snapshots` | ZFS snapshot root |
 | `TARGETS_FILE` | `/etc/fsbackup/targets.yml` | targets.yml path |
 | `S3_BUCKET` | `fsbackup-snapshots-SUFFIX` | S3 bucket name |
 | `S3_PROFILE` | `fsbackup` | AWS credentials profile name |
 | `S3_REGION` | `us-west-2` | AWS region |
 | `PRESIGN_TTL` | `3600` | Presigned download URL expiry (seconds) |
-| `CRONTAB_FILE` | `/etc/fsbackup/fsbackup.crontab` | Crontab file displayed on Configuration > Schedule tab |
+| `AUTH_ENABLED` | `true` | Require login (set `false` only on a trusted network) |
+| `AUTH_PASSWORD_HASH` | *(unset)* | bcrypt hash of the login password (generated by `web/install.sh`) |
+| `SECRET_KEY` | *(random)* | Session-cookie signing key; set a stable value to keep sessions across restarts |
 
 > `HOST` and `PORT` are read by the `if __name__ == "__main__"` entrypoint in
 > `main.py`. If you start the app via `uvicorn main:app` directly on the command
@@ -190,7 +185,7 @@ The `--reload` flag restarts on file changes — remove it in production.
 
 ## Setup
 
-Run `install.sh` as root to configure permissions, generate `.env`, install
+Run `web/install.sh` as root to configure permissions, generate `.env`, install
 dependencies, and optionally install the systemd service:
 
 ```bash
@@ -208,17 +203,16 @@ The script will:
 
 ## Permissions
 
-The `fsbackup` group covers the main paths the app needs. `install.sh` handles
+The `fsbackup` group covers the main paths the app needs. `web/install.sh` handles
 this automatically. If you need to understand or redo it manually:
 
 | Path | Access needed | Covered by |
 |------|--------------|------------|
 | `/backup/snapshots` | read + traverse | `fsbackup` group |
-| `/backup2/snapshots` | read + traverse | `fsbackup` group |
 | `/etc/fsbackup/` | read + traverse | `fsbackup` group |
-| `/var/lib/node_exporter/textfile_collector/` | read | ACL (set by install.sh) |
-| `/var/lib/fsbackup/.aws/` | read | ACL (set by install.sh) |
-| systemd journal | read | `systemd-journal` group (set by install.sh) |
+| `/var/lib/node_exporter/textfile_collector/` | read | ACL (set by `web/install.sh`) |
+| `/var/lib/fsbackup/.aws/` | read | ACL (set by `web/install.sh`) |
+| systemd journal | read | `systemd-journal` group (set by `web/install.sh`) |
 
 The app sets `AWS_SHARED_CREDENTIALS_FILE` and `AWS_CONFIG_FILE` to point at
 `/var/lib/fsbackup/.aws/` at startup, so boto3 finds the `fsbackup` AWS profile
@@ -228,7 +222,7 @@ regardless of which user runs the process.
 
 ## Deploying as a systemd service
 
-The easiest way is to let `install.sh` write and install the unit for you — it
+The easiest way is to let `web/install.sh` write and install the unit for you — it
 prompts during setup and uses the correct user, paths, and `.env` location.
 
 To do it manually, create `/etc/systemd/system/fsbackup-web.service`:
