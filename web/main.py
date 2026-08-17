@@ -77,6 +77,10 @@ AUTH_PASSWORD_HASH = os.environ.get("AUTH_PASSWORD_HASH", "")
 AUTH_USERNAME     = os.environ.get("AUTH_USERNAME", "")
 # Mark the session cookie Secure when the UI is served over HTTPS.
 SESSION_COOKIE_SECURE = os.environ.get("SESSION_COOKIE_SECURE", "false").lower() in ("true", "1", "yes")
+# Reverse-proxy support: comma-separated IPs (or "*") whose X-Forwarded-* headers
+# to trust. When set, request.client.host becomes the real client IP — so the
+# login throttle buckets per client rather than per proxy. Empty = direct access.
+PROXY_TRUSTED_IPS = os.environ.get("PROXY_TRUSTED_IPS", "").strip()
 
 # Login throttling — per client IP, in-memory (single-process app).
 LOGIN_MAX_ATTEMPTS = 5     # failures within the window before lockout
@@ -1449,9 +1453,15 @@ async def api_run(request: Request, action: str, cls: str = Form(default="")):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(
-        "main:app",
+    kwargs = dict(
         host=os.environ.get("HOST", "0.0.0.0"),
         port=int(os.environ.get("PORT", "8080")),
         reload=False,
     )
+    # Behind a reverse proxy, trust X-Forwarded-* only from the proxy so
+    # request.client.host / scheme reflect the real client (used by the login
+    # throttle). Without this, every request appears to come from the proxy.
+    if PROXY_TRUSTED_IPS:
+        kwargs["proxy_headers"] = True
+        kwargs["forwarded_allow_ips"] = PROXY_TRUSTED_IPS
+    uvicorn.run("main:app", **kwargs)
