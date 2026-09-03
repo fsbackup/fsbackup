@@ -32,7 +32,7 @@ done
 PRIMARY_SNAPSHOT_ROOT="${SNAPSHOT_ROOT:-/backup/snapshots}"
 ZFS_BASE="${PRIMARY_SNAPSHOT_ROOT#/}"   # e.g. backup/snapshots
 
-for cmd in yq jq zfs; do
+for cmd in yq zfs; do
   command -v "$cmd" >/dev/null || { echo "$cmd not found"; exit 2; }
 done
 
@@ -59,46 +59,44 @@ CREATED=0
 EXISTING=0
 FAILED=0
 
-# Iterate all target entries across all classes
-while IFS= read -r entry; do
-  id="$(jq -r '.id // empty' <<<"$entry")"
-  [[ -n "$id" ]] || continue
+# Iterate class by class, then each target id within that class.
+#
+# The class of a target is where it is listed in targets.yml — not something to
+# re-derive by id lookup. The previous by-id approach used a yq expression whose
+# class variable was mis-scoped: it emitted every class key for any id, and the
+# `head -1` that followed mapped every target to class1 (issue #76).
+while IFS= read -r cls; do
+  cls="${cls%$'\r'}"                 # targets.yml has CRLF line endings
+  [[ -n "$cls" ]] || continue
 
-  # Determine which class this target belongs to by extracting from yq output
-  # yq emits a comment-like marker — we use a second pass keyed on id
-  cls="$(yq eval 'to_entries | .[] | .key as $cls | .value[] | select(.id == "'"$id"'") | $cls' "$TARGETS_FILE" 2>/dev/null | head -1)"
+  while IFS= read -r id; do
+    id="${id%$'\r'}"
+    [[ -n "$id" && "$id" != "null" ]] || continue
 
-  if [[ -z "$cls" ]]; then
-    echo "  WARN  could not determine class for target: $id"
-    continue
-  fi
+    dataset="${ZFS_BASE}/${cls}/${id}"
 
-  dataset="${ZFS_BASE}/${cls}/${id}"
-
-  if zfs list "$dataset" &>/dev/null; then
-    printf "  %-8s %-12s %s\n" "EXISTS" "[$cls]" "$dataset"
-    EXISTING=$((EXISTING + 1))
-  else
-    if [[ "$DRY_RUN" -eq 1 ]]; then
+    if zfs list "$dataset" &>/dev/null; then
+      printf "  %-8s %-12s %s\n" "EXISTS" "[$cls]" "$dataset"
+      EXISTING=$((EXISTING + 1))
+    elif [[ "$DRY_RUN" -eq 1 ]]; then
       printf "  %-8s %-12s %s\n" "CREATE" "[$cls]" "$dataset"
       CREATED=$((CREATED + 1))
+    elif zfs create -p "$dataset"; then
+      # zfs create leaves the mountpoint root-owned; the runner rsyncs into
+      # it as the fsbackup user and fails with EACCES unless we chown it
+      mnt="$(zfs get -H -o value mountpoint "$dataset")"
+      chown fsbackup:fsbackup "$mnt" \
+        || echo "  WARN  could not chown $mnt to fsbackup — runner will fail until fixed"
+      printf "  %-8s %-12s %s\n" "CREATED" "[$cls]" "$dataset"
+      CREATED=$((CREATED + 1))
     else
-      if zfs create -p "$dataset"; then
-        # zfs create leaves the mountpoint root-owned; the runner rsyncs into
-        # it as the fsbackup user and fails with EACCES unless we chown it
-        mnt="$(zfs get -H -o value mountpoint "$dataset")"
-        chown fsbackup:fsbackup "$mnt" \
-          || echo "  WARN  could not chown $mnt to fsbackup — runner will fail until fixed"
-        printf "  %-8s %-12s %s\n" "CREATED" "[$cls]" "$dataset"
-        CREATED=$((CREATED + 1))
-      else
-        printf "  %-8s %-12s %s\n" "FAILED" "[$cls]" "$dataset"
-        FAILED=$((FAILED + 1))
-      fi
+      printf "  %-8s %-12s %s\n" "FAILED" "[$cls]" "$dataset"
+      FAILED=$((FAILED + 1))
     fi
-  fi
 
-done < <(yq eval -o=json '.. | select(has("id"))' "$TARGETS_FILE" | jq -c .)
+  done < <(yq eval ".\"${cls}\"[].id" "$TARGETS_FILE" 2>/dev/null)
+
+done < <(yq eval 'keys | .[]' "$TARGETS_FILE" 2>/dev/null)
 
 echo
 echo "Summary"
