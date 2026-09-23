@@ -15,9 +15,14 @@ set -o pipefail
 #
 # Usage:
 #   fs-retention.sh [--dry-run]
+#
+# Logging (lib/log.sh): $LOG_DIR/retention.log gets every keep/destroy
+# decision; journald gets the run start, the summary and any failures.
 # =============================================================================
 
 . /etc/fsbackup/fsbackup.conf
+LOG_DIR="${LOG_DIR:-/var/log/fsbackup}"
+. "$(dirname "$(readlink -f "$0")")/../lib/log.sh" || { echo "fs-retention: cannot load lib/log.sh" >&2; exit 2; }
 
 PRIMARY_SNAPSHOT_ROOT="${SNAPSHOT_ROOT:-/backup/snapshots}"
 ZFS_BASE="${PRIMARY_SNAPSHOT_ROOT#/}"
@@ -35,17 +40,12 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-LOG_DIR="/var/lib/fsbackup/log"
-LOG_FILE="${LOG_DIR}/retention.log"
+log_init retention
 NODEEXP_DIR="/var/lib/node_exporter/textfile_collector"
 PROM_OUT="${NODEEXP_DIR}/fsbackup_retention.prom"
 
-mkdir -p "$LOG_DIR"
-
 exec 9>/run/lock/fsbackup-retention.lock
-flock -n 9 || { echo "$(date -Is) [retention] already running, exiting"; exit 0; }
-
-log() { echo "$(date -Is) [retention] $*" | tee -a "$LOG_FILE"; }
+flock -n 9 || { event "retention" "already running, exiting"; exit 0; }
 
 # keep_count_for_type <type> → echo the keep count (0 = unlimited)
 keep_count_for_type() {
@@ -63,8 +63,10 @@ DESTROYED=0
 KEPT=0
 FAILED=0
 
-[[ "$DRY_RUN" -eq 1 ]] && log "DRY RUN — no snapshots will be destroyed"
-log "Starting retention pruning (daily=${KEEP_DAILY} weekly=${KEEP_WEEKLY} monthly=${KEEP_MONTHLY} annual=${KEEP_ANNUAL:-unlimited})"
+DRY_TAG=""
+[[ "$DRY_RUN" -eq 1 ]] && DRY_TAG=" (dry-run)"
+[[ "$DRY_RUN" -eq 1 ]] && event "retention" "DRY RUN — no snapshots will be destroyed"
+event "retention" "Starting retention pruning (daily=${KEEP_DAILY} weekly=${KEEP_WEEKLY} monthly=${KEEP_MONTHLY} annual=${KEEP_ANNUAL:-unlimited})"
 
 # Collect all snapshot names, grouped by dataset
 declare -A snap_lists   # dataset -> space-separated list of snapnames sorted oldest-first
@@ -93,7 +95,7 @@ for dataset in "${!snap_lists[@]}"; do
     total="${#snaps[@]}"
 
     if [[ "$keep" -eq 0 || "$total" -le "$keep" ]]; then
-      log "KEEP  ${dataset} ${type}: total=${total} keep=${keep:-unlimited} → nothing to prune"
+      log "retention" "KEEP  ${dataset} ${type}: total=${total} keep=${keep:-unlimited} → nothing to prune"
       KEPT=$((KEPT + total))
       unset "by_type[$type]"
       continue
@@ -106,14 +108,14 @@ for dataset in "${!snap_lists[@]}"; do
       snap="${snaps[$i]}"
       full="${dataset}@${snap}"
       if [[ "$DRY_RUN" -eq 1 ]]; then
-        log "DRY   zfs destroy ${full}"
+        log "retention" "DRY   zfs destroy ${full}"
         DESTROYED=$((DESTROYED + 1))
       else
-        log "DESTROY ${full}"
-        if zfs destroy "$full" 2>>"$LOG_FILE"; then
+        log "retention" "DESTROY ${full}"
+        if zfs_err="$(zfs destroy "$full" 2>&1)"; then
           DESTROYED=$((DESTROYED + 1))
         else
-          log "ERROR  failed to destroy ${full}"
+          error "retention" "failed to destroy ${full}${zfs_err:+: ${zfs_err//$'\n'/ }}"
           FAILED=$((FAILED + 1))
         fi
       fi
@@ -129,7 +131,7 @@ END_TS="$(date +%s)"
 DURATION=$(( END_TS - START_TS ))
 EXIT_CODE=$([[ "$FAILED" -gt 0 ]] && echo 1 || echo 0)
 
-log "Retention complete: destroyed=${DESTROYED} kept=${KEPT} failed=${FAILED} duration=${DURATION}s"
+event "retention" "Retention complete: destroyed=${DESTROYED} kept=${KEPT} failed=${FAILED} duration=${DURATION}s${DRY_TAG}"
 
 # A dry run must not publish metrics — it would report would-be destroys as
 # real ones and advance last_run as if retention had actually run.

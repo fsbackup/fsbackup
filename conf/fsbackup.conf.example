@@ -3,6 +3,13 @@ SNAPSHOT_ROOT="/backup/snapshots"
 # ZFS pool name (derived from SNAPSHOT_ROOT if unset — strip leading /)
 # ZFS_POOL="backup"
 
+# Log files (backup-<class>.log, retention.log, s3-export.log, doctor-<class>.log,
+# fs-orphans.log, scrub.log). Defaults to /var/log/fsbackup when unset. Use a
+# literal path: the web UI reads this value without running the file. If you
+# change it, also update the path in /etc/logrotate.d/fsbackup and create the
+# directory owned by fsbackup:fsbackup, mode 0750.
+LOG_DIR="/var/log/fsbackup"
+
 # =============================================================================
 # Schedule — OnCalendar= values for each class/type
 # Applied to systemd timers via: sudo fs-schedule-apply.sh

@@ -4,6 +4,11 @@ set -o pipefail
 
 # =============================================================================
 # fs-doctor.sh — target health + snapshot audit + immutability verification
+#
+# Logging (lib/log.sh): the report is printed to stdout (journald) as before
+# and also written, timestamped, to $LOG_DIR/doctor-<class>.log so past runs
+# rotate and can be browsed. Orphan datasets are appended to
+# $LOG_DIR/fs-orphans.log (shared by all classes).
 # =============================================================================
 
 CONFIG_FILE="/etc/fsbackup/targets.yml"
@@ -15,10 +20,12 @@ NODEEXP_DIR="/var/lib/node_exporter/textfile_collector"
 NODEEXP_METRIC="${NODEEXP_DIR}/fsbackup_nodeexp_health.prom"
 ORPHAN_METRIC="${NODEEXP_DIR}/fsbackup_orphans.prom"
 
-ORPHAN_LOG="/var/lib/fsbackup/log/fs-orphans.log"
-
 . /etc/fsbackup/fsbackup.conf
+LOG_DIR="${LOG_DIR:-/var/log/fsbackup}"
+. "$(dirname "$(readlink -f "$0")")/../lib/log.sh" || { echo "fs-doctor: cannot load lib/log.sh" >&2; exit 2; }
 PRIMARY_SNAPSHOT_ROOT="${SNAPSHOT_ROOT:-/backup/snapshots}"
+
+ORPHAN_LOG="${LOG_DIR}/fs-orphans.log"
 
 usage() {
   echo "Usage: fs-doctor.sh --class <class>"
@@ -33,11 +40,29 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "$CLASS" ]] || usage
+log_init "doctor-${CLASS}"
+
+# say <text>: one report line — stdout (journald) and the doctor log file.
+say() {
+  printf '%s\n' "$*"
+  [[ -n "$*" ]] && log "doctor" "$*"
+  return 0
+}
+
+# row <target> <status> <detail>: one aligned report table row.
+row() {
+  say "$(printf "%-28s %-6s %s" "$1" "$2" "$3")"
+}
+
+# orphan_log <msg>: append to the shared fs-orphans.log instead of doctor-<class>.log.
+orphan_log() {
+  LOG_FILE="$ORPHAN_LOG" log "orphans" "$@"
+}
 
 START_TS=$(date +%s.%N)
 
 for cmd in yq jq ssh; do
-  command -v "$cmd" >/dev/null || { echo "$cmd not found"; exit 2; }
+  command -v "$cmd" >/dev/null || { error "doctor" "$cmd not found"; exit 2; }
 done
 
 mapfile -t TARGETS < <(
@@ -61,13 +86,13 @@ FAIL=0
 WARN=0
 MISSING_DATASETS=0
 
-echo
-echo "fsbackup doctor"
-echo "  Class:  $CLASS"
-echo
+say
+say "fsbackup doctor"
+say "  Class:  $CLASS"
+say
 
-printf "%-28s %-6s %s\n" "TARGET" "STAT" "DETAIL"
-printf "%-28s %-6s %s\n" "----------------------------" "------" "------------------------------"
+row "TARGET" "STAT" "DETAIL"
+row "----------------------------" "------" "------------------------------"
 
 # -----------------------------------------------------------------------------
 # TARGET HEALTH
@@ -78,13 +103,13 @@ for t in "${TARGETS[@]}"; do
   src="$(jq -r '.source // empty' <<<"$t")"
 
   if [[ -z "$id" || -z "$host" || -z "$src" ]]; then
-    printf "%-28s %-6s %s\n" "${id:-<unknown>}" "WARN" "invalid target entry"
+    row "${id:-<unknown>}" "WARN" "invalid target entry"
     ((WARN++))
     continue
   fi
 
   if [[ ! -d "${PRIMARY_SNAPSHOT_ROOT}/${CLASS}/${id}" ]]; then
-    printf "%-28s %-6s %s\n" "$id" "WARN" "dataset not provisioned (runner will auto-provision)"
+    row "$id" "WARN" "dataset not provisioned (runner will auto-provision)"
     ((WARN++))
     ((MISSING_DATASETS++))
     continue
@@ -92,35 +117,34 @@ for t in "${TARGETS[@]}"; do
 
   if is_local_host "$host"; then
     if [[ -e "$src" ]]; then
-      printf "%-28s %-6s %s\n" "$id" "OK" "local path exists"
+      row "$id" "OK" "local path exists"
       ((PASS++))
     else
-      printf "%-28s %-6s %s\n" "$id" "FAIL" "local missing: $src"
+      row "$id" "FAIL" "local missing: $src"
       ((FAIL++))
     fi
     continue
   fi
 
   if ssh "${SSH_OPTS[@]}" "${BACKUP_SSH_USER}@${host}" "test -e '$src'" >/dev/null 2>&1; then
-    printf "%-28s %-6s %s\n" "$id" "OK" "ssh+path OK"
+    row "$id" "OK" "ssh+path OK"
     ((PASS++))
   else
-    printf "%-28s %-6s %s\n" "$id" "FAIL" "ssh/path failed"
+    row "$id" "FAIL" "ssh/path failed"
     ((FAIL++))
   fi
 done
 
-echo
-echo "Doctor summary"
-echo "  OK:    $PASS"
-echo "  WARN:  $WARN"
-echo "  FAIL:  $FAIL"
-echo
+say
+say "Doctor summary"
+say "  OK:    $PASS"
+say "  WARN:  $WARN"
+say "  FAIL:  $FAIL"
+say
 
 # -----------------------------------------------------------------------------
 # ORPHAN DETECTION
 # -----------------------------------------------------------------------------
-mkdir -p "$(dirname "$ORPHAN_LOG")"
 
 mapfile -t VALID_IDS < <(
   yq eval '.. | select(has("id")) | .id' "$CONFIG_FILE" | sort -u
@@ -138,7 +162,7 @@ while read -r d; do
 
   if [[ -z "${VALID[$target]+x}" ]]; then
     ORPHAN_COUNT=$((ORPHAN_COUNT + 1))
-    echo "$(date -Is) class=${class} orphan=${target}" >>"$ORPHAN_LOG"
+    orphan_log "class=${class} orphan=${target}"
   fi
 done < <(find "$PRIMARY_SNAPSHOT_ROOT" -mindepth 2 -maxdepth 2 -type d)
 
@@ -236,6 +260,8 @@ EOF
 chgrp nodeexp_txt "$tmp" 2>/dev/null || true
 chmod 0644 "$tmp"
 mv "$tmp" "${NODEEXP_DIR}/fsbackup_doctor_duration.prom"
+
+event "doctor" "Doctor complete: class=${CLASS} ok=${PASS} warn=${WARN} fail=${FAIL} missing_datasets=${MISSING_DATASETS} orphans=${ORPHAN_COUNT} duration=${DURATION}s"
 
 exit 0
 

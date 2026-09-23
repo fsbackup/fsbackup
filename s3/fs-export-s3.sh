@@ -18,9 +18,14 @@ set -o pipefail
 # Optional in /etc/fsbackup/fsbackup.conf:
 #   S3_SKIP_CLASSES="class3"    (space-separated, defaults to class3)
 #   S3_AWS_PROFILE="fsbackup"   (defaults to fsbackup)
+#
+# Logging (lib/log.sh): $LOG_DIR/s3-export.log gets every object decision
+# (SKIP/EXISTS/UPLOAD/OK); journald gets the run start, the summary and errors.
 # =============================================================================
 
 . /etc/fsbackup/fsbackup.conf
+LOG_DIR="${LOG_DIR:-/var/log/fsbackup}"
+. "$(dirname "$(readlink -f "$0")")/../lib/log.sh" || { echo "fs-export-s3: cannot load lib/log.sh" >&2; exit 2; }
 
 S3_BUCKET="${S3_BUCKET:-}"
 S3_SKIP_CLASSES="${S3_SKIP_CLASSES:-class3}"
@@ -30,33 +35,27 @@ AGE_PUBKEY_FILE="/etc/fsbackup/age.pub"
 PRIMARY_SNAPSHOT_ROOT="${SNAPSHOT_ROOT:-/backup/snapshots}"
 ZFS_BASE="${PRIMARY_SNAPSHOT_ROOT#/}"   # e.g. backup/snapshots
 
-LOG_DIR="/var/lib/fsbackup/log"
-LOG_FILE="${LOG_DIR}/s3-export.log"
+log_init s3-export
 NODEEXP_DIR="/var/lib/node_exporter/textfile_collector"
 PROM_OUT="${NODEEXP_DIR}/fsbackup_s3.prom"
 PROM_TMP="$(mktemp)"
-trap 'rm -f "$PROM_TMP"' EXIT
-
-mkdir -p "$LOG_DIR"
+ZFS_ERR_TMP="$(mktemp)"
+trap 'rm -f "$PROM_TMP" "$ZFS_ERR_TMP"' EXIT
 
 # -----------------------------------------------------------------------------
 # Preflight checks
 # -----------------------------------------------------------------------------
 
-[[ -n "$S3_BUCKET" ]] || { echo "S3_BUCKET not set in fsbackup.conf" >&2; exit 2; }
-[[ -f "$AGE_PUBKEY_FILE" ]] || { echo "age public key not found: $AGE_PUBKEY_FILE" >&2; exit 2; }
+[[ -n "$S3_BUCKET" ]] || { error "s3-export" "S3_BUCKET not set in fsbackup.conf"; exit 2; }
+[[ -f "$AGE_PUBKEY_FILE" ]] || { error "s3-export" "age public key not found: $AGE_PUBKEY_FILE"; exit 2; }
 
 for cmd in zfs age aws; do
-  command -v "$cmd" >/dev/null || { echo "$cmd not found" >&2; exit 2; }
+  command -v "$cmd" >/dev/null || { error "s3-export" "$cmd not found"; exit 2; }
 done
 
 # Lock to prevent overlapping runs
 exec 9>/run/lock/fsbackup-s3-export.lock
-flock -n 9 || { echo "$(date +%Y-%m-%dT%H:%M:%S%z) [s3-export] already running, exiting" | tee -a "$LOG_FILE"; exit 0; }
-
-log() {
-  echo "$(date +%Y-%m-%dT%H:%M:%S%z) [s3-export] $*" | tee -a "$LOG_FILE"
-}
+flock -n 9 || { event "s3-export" "already running, exiting"; exit 0; }
 
 # -----------------------------------------------------------------------------
 # Main
@@ -68,9 +67,9 @@ SKIPPED=0
 FAILED=0
 BYTES_TOTAL=0
 
-log "Starting S3 export to s3://${S3_BUCKET}"
-log "  ZFS base:     ${ZFS_BASE}"
-log "  Skip classes: ${S3_SKIP_CLASSES:-<none>}"
+event "s3-export" "Starting S3 export to s3://${S3_BUCKET}"
+log "s3-export" "  ZFS base:     ${ZFS_BASE}"
+log "s3-export" "  Skip classes: ${S3_SKIP_CLASSES:-<none>}"
 
 while IFS= read -r snapfull; do
   # snapfull = backup/snapshots/class1/technicom.files@weekly-2026-W12
@@ -92,20 +91,20 @@ while IFS= read -r snapfull; do
   cls="${rel%%/*}"
   target="${rel#*/}"
   if [[ "$cls" == "$target" || "$target" == */* ]]; then
-    log "WARN: unexpected dataset depth, skipping: $dataset"
+    error "s3-export" "unexpected dataset depth, skipping: $dataset"
     continue
   fi
 
   # Skip excluded classes
   if [[ -n "$S3_SKIP_CLASSES" && " $S3_SKIP_CLASSES " == *" $cls "* ]]; then
-    log "SKIP class=${cls} tier=${tier} date=${date_key} target=${target} (S3_SKIP_CLASSES)"
+    log "s3-export" "SKIP class=${cls} tier=${tier} date=${date_key} target=${target} (S3_SKIP_CLASSES)"
     continue
   fi
 
   # Snapshot data is available via the ZFS .zfs hidden directory
   snap_data="${PRIMARY_SNAPSHOT_ROOT}/${cls}/${target}/.zfs/snapshot/${snapname}"
   if [[ ! -d "$snap_data" ]]; then
-    log "WARN: snapshot data dir not found: $snap_data"
+    error "s3-export" "snapshot data dir not found: $snap_data"
     continue
   fi
 
@@ -119,12 +118,12 @@ while IFS= read -r snapfull; do
       --key "$s3_key" \
       --profile "$AWS_PROFILE" \
       &>/dev/null; then
-    log "EXISTS ${s3_uri}"
+    log "s3-export" "EXISTS ${s3_uri}"
     SKIPPED=$((SKIPPED + 1))
     continue
   fi
 
-  log "UPLOAD ${s3_uri}"
+  log "s3-export" "UPLOAD ${s3_uri}"
 
   if tar -C "$snap_data" -cf - . \
       | zstd -6 -T0 \
@@ -143,20 +142,24 @@ while IFS= read -r snapfull; do
       --output text 2>/dev/null || echo 0)
     BYTES_TOTAL=$((BYTES_TOTAL + BYTES))
 
-    log "OK ${s3_uri} (${BYTES} bytes)"
+    log "s3-export" "OK ${s3_uri} (${BYTES} bytes)"
 
     echo "fsbackup_s3_target_last_upload{tier=\"${tier}\",class=\"${cls}\",target=\"${target}\"} $(date +%s)" \
       >>"$PROM_TMP"
 
   else
     FAILED=$((FAILED + 1))
-    log "ERROR upload failed: ${s3_uri}"
+    error "s3-export" "upload failed: ${s3_uri}"
 
     echo "fsbackup_s3_target_last_failure{tier=\"${tier}\",class=\"${cls}\",target=\"${target}\"} $(date +%s)" \
       >>"$PROM_TMP"
   fi
 
-done < <(zfs list -t snapshot -r -H -o name "$ZFS_BASE" 2>>"$LOG_FILE" | sort)
+done < <(zfs list -t snapshot -r -H -o name "$ZFS_BASE" 2>"$ZFS_ERR_TMP" | sort)
+
+while IFS= read -r errline; do
+  error "s3-export" "zfs list: $errline"
+done <"$ZFS_ERR_TMP"
 
 END_TS="$(date +%s)"
 DURATION=$((END_TS - START_TS))
@@ -196,5 +199,5 @@ chgrp nodeexp_txt "$PROM_TMP" 2>/dev/null || true
 chmod 0644 "$PROM_TMP"
 mv "$PROM_TMP" "$PROM_OUT"
 
-log "S3 export complete: uploaded=${UPLOADED} skipped=${SKIPPED} failed=${FAILED} bytes=${BYTES_TOTAL} duration=${DURATION}s"
+event "s3-export" "S3 export complete: uploaded=${UPLOADED} skipped=${SKIPPED} failed=${FAILED} bytes=${BYTES_TOTAL} duration=${DURATION}s"
 exit "$EXIT_CODE"

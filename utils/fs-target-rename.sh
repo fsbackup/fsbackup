@@ -64,7 +64,7 @@ if [[ "$MODE" == "move" ]]; then
 fi
 
 log() {
-  echo "$(date +%Y-%m-%dT%H:%M:%S%z) [fs-target-rename] $*"
+  echo "$(date -Is) [fs-target-rename] $*"
 }
 
 ZFS_BASE="${SNAPSHOT_ROOT#/}"
