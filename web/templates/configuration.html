@@ -30,7 +30,7 @@
   <div class="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl overflow-hidden shadow-sm">
     <div class="px-5 py-4 border-b border-zinc-100 dark:border-zinc-800">
       <p class="text-sm font-semibold text-zinc-800 dark:text-zinc-200">Remote hosts</p>
-      <p class="text-xs text-zinc-400 mt-0.5">Hosts derived from targets.yml. Use <code class="font-mono bg-zinc-100 dark:bg-zinc-800 px-1 rounded">fs-trust-host.sh</code> to seed SSH host keys for any new host before adding targets.</p>
+      <p class="text-xs text-zinc-400 mt-0.5">Hosts derived from targets.yml. The runner connects to <code class="font-mono bg-zinc-100 dark:bg-zinc-800 px-1 rounded">backup@&lt;host&gt;</code> with strict host key checking, so each remote host's key must be trusted first.</p>
     </div>
     {% if hosts %}
     <div class="overflow-x-auto">
@@ -38,6 +38,7 @@
       <thead>
         <tr class="text-left text-xs text-zinc-500 uppercase tracking-wider bg-zinc-50 dark:bg-zinc-800/50 border-b border-zinc-100 dark:border-zinc-800">
           <th class="px-5 py-3 font-medium whitespace-nowrap">Hostname</th>
+          <th class="px-5 py-3 font-medium whitespace-nowrap">Host key</th>
           <th class="px-5 py-3 font-medium">Targets</th>
         </tr>
       </thead>
@@ -51,6 +52,22 @@
         {% endfor %}
         <tr class="hover:bg-zinc-50 dark:hover:bg-zinc-800/50 transition-colors">
           <td class="px-5 py-3 font-mono text-sm text-zinc-900 dark:text-white whitespace-nowrap">{{ host }}</td>
+          <td class="px-5 py-3 whitespace-nowrap">
+            {% set hk = host_keys.get(host, {}) %}
+            {% if hk.local %}
+            <span class="text-xs text-zinc-400">local — no SSH</span>
+            {% elif hk.trusted %}
+            <span class="text-xs text-emerald-600 dark:text-emerald-400" title="{{ hk.fingerprint }}">✓ trusted</span>
+            <span class="hidden xl:inline font-mono text-xs text-zinc-400 ml-1">{{ hk.fingerprint[:23] }}…</span>
+            {% else %}
+            <span class="text-xs text-red-500 dark:text-red-400 mr-2">not trusted</span>
+            <button type="button"
+                    hx-post="/api/hosts/scan" hx-vals='{"host": "{{ host }}"}'
+                    hx-target="#trust-result" hx-swap="innerHTML"
+                    onclick="document.getElementById('trust-panel').scrollIntoView({behavior: 'smooth'})"
+                    class="text-xs text-brand-600 dark:text-brand-400 hover:underline">Trust…</button>
+            {% endif %}
+          </td>
           <td class="px-5 py-3">
             <div class="flex flex-wrap gap-1">
               {% for tid in host_targets %}
@@ -70,11 +87,19 @@
     {% endif %}
   </div>
 
-  <div class="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl p-5 shadow-sm">
-    <p class="text-sm font-semibold text-zinc-800 dark:text-zinc-200 mb-1">Adding a new host</p>
-    <p class="text-xs text-zinc-500 mb-3">Run the following to seed SSH host keys for a new backup source. Defaults to port 22.</p>
-    <pre class="text-xs font-mono bg-zinc-50 dark:bg-zinc-950 text-zinc-700 dark:text-zinc-300 rounded-lg p-3 overflow-x-auto">sudo -u fsbackup /opt/fsbackup/utils/fs-trust-host.sh &lt;hostname&gt; [port]</pre>
-    <p class="text-xs text-zinc-400 mt-2">Then add the host's targets to <code class="font-mono bg-zinc-100 dark:bg-zinc-800 px-1 rounded">/etc/fsbackup/targets.yml</code> and reload the web UI.</p>
+  <div id="trust-panel" class="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl p-5 shadow-sm space-y-3">
+    <div>
+      <p class="text-sm font-semibold text-zinc-800 dark:text-zinc-200 mb-1">Trust a host key</p>
+      <p class="text-xs text-zinc-500">Scan a host (port 22), compare the fingerprint with the host's own key, then confirm. Add the host before adding its targets to <code class="font-mono bg-zinc-100 dark:bg-zinc-800 px-1 rounded">targets.yml</code>. Console equivalent:
+        <code class="font-mono bg-zinc-100 dark:bg-zinc-800 px-1 rounded">sudo -u fsbackup /opt/fsbackup/utils/fs-trust-host.sh &lt;hostname&gt;</code></p>
+    </div>
+    <form hx-post="/api/hosts/scan" hx-target="#trust-result" hx-swap="innerHTML" class="flex items-center gap-2">
+      <input type="text" name="host" required maxlength="253" placeholder="hostname or IP"
+             class="w-64 text-sm font-mono bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg px-3 py-1.5 text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-brand-500">
+      <button type="submit"
+              class="bg-brand-600 hover:bg-brand-500 text-white text-xs font-medium px-3 py-2 rounded-lg transition-colors">Scan</button>
+    </form>
+    <div id="trust-result"></div>
   </div>
 </div>
 

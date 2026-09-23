@@ -110,6 +110,19 @@ sudo /opt/fsbackup/utils/fs-trust-host.sh <hostname>
 `fs-trust-host.sh` will print the fingerprint of the trusted key. Verify it matches the
 host before proceeding.
 
+**From the web UI:** Configuration → Hosts lists each host's trust state. Click **Trust…**
+next to a host (or enter a new one under *Trust a host key*) to scan it. The UI shows the
+ed25519 fingerprint; compare it with `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on
+the host, then confirm. The key is only written if the host still presents that exact
+fingerprint. Scanning an already-trusted host warns if its key has changed.
+
+To script the same two-step check on the console:
+
+```bash
+sudo -u fsbackup /opt/fsbackup/utils/fs-trust-host.sh --scan <hostname>          # prints FINGERPRINT SHA256:…
+sudo -u fsbackup /opt/fsbackup/utils/fs-trust-host.sh --expect SHA256:… <hostname>
+```
+
 ### Step 2 — Initialize the remote host (run on the source host)
 
 Copy the init script and public key to the remote host, then run it as root:

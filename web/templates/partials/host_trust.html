@@ -1,0 +1,45 @@
+{% if step == "error" %}
+<div class="text-xs text-red-700 dark:text-red-400 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg px-3 py-2">
+  {{ host }}: {{ message }}
+</div>
+
+{% elif step == "present" %}
+<div class="text-xs text-zinc-600 dark:text-zinc-300 bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-200 dark:border-zinc-700 rounded-lg px-3 py-2 space-y-1">
+  {% if stored and stored != fingerprint %}
+  <p class="text-red-600 dark:text-red-400 font-semibold">⚠ <span class="font-mono">{{ host }}</span> is presenting a different key than the one trusted.</p>
+  {% else %}
+  <p><span class="font-mono">{{ host }}</span> is already trusted — nothing to do.</p>
+  {% endif %}
+  <p>Host presents: <span class="font-mono">{{ fingerprint }}</span></p>
+  {% if stored and stored != fingerprint %}
+  <p class="text-red-600 dark:text-red-400 font-medium">
+    ⚠ This differs from the stored key (<span class="font-mono">{{ stored }}</span>). If the host was reinstalled,
+    remove the old entry on the console with <code class="font-mono">sudo -u fsbackup ssh-keygen -R {{ host }} -f /var/lib/fsbackup/.ssh/known_hosts</code>
+    and trust it again; otherwise investigate before backing up from it.
+  </p>
+  {% endif %}
+</div>
+
+{% elif step == "confirm" %}
+<div class="text-xs bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg px-3 py-3 space-y-2">
+  <p class="text-zinc-700 dark:text-zinc-200"><span class="font-mono font-semibold">{{ host }}</span> presents this ed25519 host key:</p>
+  <p class="font-mono text-sm text-zinc-900 dark:text-white break-all">{{ fingerprint }}</p>
+  <p class="text-zinc-500">Verify it on the host before trusting:
+    <code class="font-mono bg-zinc-100 dark:bg-zinc-800 px-1 rounded">ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub</code></p>
+  <form hx-post="/api/hosts/trust" hx-target="#trust-result" hx-swap="innerHTML" class="flex items-center gap-2 pt-1">
+    <input type="hidden" name="host" value="{{ host }}">
+    <input type="hidden" name="fingerprint" value="{{ fingerprint }}">
+    <button type="submit"
+            class="bg-brand-600 hover:bg-brand-500 text-white text-xs font-medium px-3 py-1.5 rounded-lg transition-colors">
+      Fingerprint matches — trust {{ host }}
+    </button>
+    <button type="button" onclick="document.getElementById('trust-result').innerHTML=''"
+            class="text-xs text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200">Cancel</button>
+  </form>
+</div>
+
+{% elif step == "trusted" %}
+<div class="text-xs text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 rounded-lg px-3 py-2">
+  {{ message }} — <a href="/configuration?tab=hosts" class="underline">reload</a> to refresh the table.
+</div>
+{% endif %}
