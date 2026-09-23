@@ -896,8 +896,8 @@ _LOG_SECTIONS = [
     ("fsbackup-doctor@class1.service",         "Doctor — class1",   "journal"),
     ("fsbackup-doctor@class2.service",         "Doctor — class2",   "journal"),
     ("fsbackup-doctor@class3.service",         "Doctor — class3",   "journal"),
-    ("fs-orphans",                             "Orphans",           "fs-orphans.log"),
     ("fsbackup-scrub.service",                 "ZFS scrub",         "scrub.log"),
+    ("fs-orphans",                             "Orphans",           "fs-orphans.log"),
 ]
 
 
