@@ -80,6 +80,7 @@ Scripts source this with: `. /etc/fsbackup/fsbackup.conf`
 | `fs-doctor.sh` | `bin/` | systemd timer (`fsbackup-doctor@<class>.timer`) |
 | `fs-install.sh` | `bin/` | manual (bare-metal installer; run as root) |
 | `fs-schedule-apply.sh` | `bin/` | manual + installer (writes systemd OnCalendar= drop-ins) |
+| `fs-schedule-set.sh` | `bin/` | manual + web UI (Configuration > Schedule): set one `CLASS*_SCHEDULE`, then apply |
 | `fs-db-export.sh` | `bin/` | systemd timer (`fs-db-export@<name>.timer`); runs as root |
 | `fs-restore.sh` | `utils/` | manual only |
 | `fs-trust-host.sh` | `utils/` | manual only |
@@ -121,6 +122,8 @@ Doctor output has no log file — it goes to the journal (`journalctl -u fsbacku
 The `fsbackup` user runs most services. Exceptions:
 - `fs-db-export@.service`: `User=root` (needs `docker exec`)
 - Orphan dataset deletion in web UI: `sudo zfs destroy -r <dataset>` — allowed via `/etc/sudoers.d/fsbackup-zfs-destroy` (NOPASSWD, scoped to `SNAPSHOT_ROOT/*/*`). Created automatically by `fs-install.sh`.
+- Runner auto-provisioning: `sudo fs-provision.sh` — `/etc/sudoers.d/fsbackup-provision`.
+- Web UI schedule edits: `sudo fs-schedule-set.sh <KEY> <OnCalendar>` — `/etc/sudoers.d/fsbackup-schedule`. `fsbackup.conf` is sourced as root, so the script validates key + value itself.
 
 ---
 

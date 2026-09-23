@@ -176,11 +176,11 @@
 {% elif tab == "schedule" %}
 <div class="mb-4 space-y-1">
   <p class="text-sm text-zinc-500">SystemD timer schedule for all fsbackup jobs.</p>
-  <p class="text-xs text-zinc-400">Runner schedules (<code class="font-mono bg-zinc-100 dark:bg-zinc-800 px-1 rounded">CLASS*_SCHEDULE</code>) are set in <code class="font-mono bg-zinc-100 dark:bg-zinc-800 px-1 rounded">/etc/fsbackup/fsbackup.conf</code>. After editing, apply with: <code class="font-mono bg-zinc-100 dark:bg-zinc-800 px-1 rounded">sudo fs-schedule-apply.sh</code></p>
+  <p class="text-xs text-zinc-400">Runner schedules (<code class="font-mono bg-zinc-100 dark:bg-zinc-800 px-1 rounded">CLASS*_SCHEDULE</code> in <code class="font-mono bg-zinc-100 dark:bg-zinc-800 px-1 rounded">/etc/fsbackup/fsbackup.conf</code>) can be edited here — each change is validated with <code class="font-mono bg-zinc-100 dark:bg-zinc-800 px-1 rounded">systemd-analyze calendar</code>, written to fsbackup.conf, and applied to the timers immediately. Console equivalent: <code class="font-mono bg-zinc-100 dark:bg-zinc-800 px-1 rounded">sudo fs-schedule-set.sh CLASS1_DAILY_SCHEDULE "*-*-* 01:45"</code>. Enabling a disabled schedule is a console step.</p>
 </div>
 
 <div id="schedule-table">
-  {% include "partials/crontab_table.html" %}
+  {% include "partials/schedule_table.html" %}
 </div>
 
 <!-- ============================================================= VOLUMES -->
