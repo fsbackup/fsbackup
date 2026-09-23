@@ -114,7 +114,7 @@ Parameterized by class instance (e.g. `@class1`):
 
 Per-class runner logs: `/var/lib/fsbackup/log/backup-<class>.log`
 Other logs in same dir: `retention.log`, `s3-export.log`, `scrub.log`, `fs-orphans.log`
-`scrub.log` is written by a root script into the fsbackup-owned dir, so `fs-scrub-check.sh` writes it through a writer (`mkdir -p` + `tee`) running as fsbackup (`setpriv`). Root never opens or creates a path in that dir (it doesn't call `log_init`), and the file stays fsbackup-owned for logrotate's `copytruncate`. Its `LOG_DIR` default follows `lib/log.sh`: `/var/log/fsbackup` if `/opt/fsbackup/lib/log.sh` (#113) is installed, else `/var/lib/fsbackup/log`.
+`scrub.log` is written by a root script into the fsbackup-owned dir, so `fs-scrub-check.sh` writes it through a writer (`mkdir -p` + a non-blocking `dd` append, so a planted FIFO can't hang it) running as fsbackup (`setpriv`). Root never opens or creates a path in that dir (it doesn't call `log_init`), and the file stays fsbackup-owned for logrotate's `copytruncate`. Its `LOG_DIR` default follows `lib/log.sh`: `/var/log/fsbackup` if `/opt/fsbackup/lib/log.sh` (#113) is installed, else `/var/lib/fsbackup/log`.
 Doctor output has no log file — it goes to the journal (`journalctl -u fsbackup-doctor@<class>`); `fs-orphans.log` only records orphan events (all classes).
 
 ---
@@ -123,7 +123,7 @@ Doctor output has no log file — it goes to the journal (`journalctl -u fsbacku
 
 The `fsbackup` user runs most services. Exceptions:
 - `fs-db-export@.service`: `User=root` (needs `docker exec`)
-- `fsbackup-scrub.service`: `User=root` (`zpool scrub` has no delegation). Lock is `/run/fsbackup-scrub.lock`, not `/run/lock`, which is world-writable.
+- `fsbackup-scrub.service`: `User=root` (`zpool scrub` has no delegation). Lock is `/run/fsbackup-scrub.lock` (0600: flock works on a read-only fd, so a readable lock file would let any user make the scrub skip itself), not `/run/lock`, which is world-writable. The unit has `TimeoutStartSec=2d`, so a hung check fails instead of staying active.
 - Orphan dataset deletion in web UI: `sudo zfs destroy -r <dataset>` — allowed via `/etc/sudoers.d/fsbackup-zfs-destroy` (NOPASSWD, scoped to `SNAPSHOT_ROOT/*/*`). Created automatically by `fs-install.sh`.
 - Runner auto-provisioning: `sudo fs-provision.sh` — `/etc/sudoers.d/fsbackup-provision`.
 - Web UI rename target: `sudo fs-target-rename.sh …` — `/etc/sudoers.d/fsbackup-target-rename`.

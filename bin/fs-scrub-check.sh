@@ -293,10 +293,17 @@ LOG_FILE="$LOG_DIR/scrub.log"
 # the writer prints one warning to journald and drops the file lines; event
 # and error lines still reach journald directly. It starts before the lock is
 # taken so it doesn't inherit the lock fd.
-# (sh is dash: `true`, not `:`, because a failed redirection on a special
-# builtin like `:` makes dash exit instead of returning non-zero.)
+# The writer appends with dd and O_NONBLOCK, not tee or a shell >>: fsbackup
+# could also plant a FIFO at scrub.log, and a normal open of a FIFO for writing
+# blocks until something reads it. finish() waits for the writer, so the unit
+# would then never end. With O_NONBLOCK that open fails at once (ENXIO), and a
+# FIFO whose reader stops reading fails the write (EAGAIN) instead of blocking.
+# O_NONBLOCK changes nothing for a regular file. bs= makes dd write each line
+# as soon as it arrives instead of filling a block first.
 LOG_WRITER_SH='mkdir -p -- "$1" 2>/dev/null
-if { true >>"$2"; } 2>/dev/null; then exec tee -a -- "$2" >/dev/null; fi
+if dd of="$2" oflag=append,nonblock conv=notrunc status=none </dev/null 2>/dev/null; then
+  exec dd bs=65536 of="$2" oflag=append,nonblock conv=notrunc status=none
+fi
 echo "$(date -Is) [log] WARN cannot write $2 as fsbackup; detail lines from this run are not being saved (LOG_DIR must exist and be owned by fsbackup)" >&2
 exec cat >/dev/null'
 LOG_WRITER_PID=""
@@ -314,7 +321,7 @@ fi
 trap '' PIPE
 
 finish() {
-  # Close the pipe and wait for tee, so the last lines reach the file before
+  # Close the pipe and wait for the writer, so the last lines reach the file before
   # systemd cleans up the unit's cgroup.
   if [[ -n "$LOG_WRITER_PID" ]]; then
     exec 3>&-
@@ -328,10 +335,17 @@ NODEEXP_DIR="/var/lib/node_exporter/textfile_collector"
 PROM_OUT="${NODEEXP_DIR}/fsbackup_scrub.prom"
 
 # /run, not /run/lock: /run/lock is world-writable, so another user could
-# pre-create the lock file and block root from opening it.
+# pre-create the lock file and block root from opening it. The file is also
+# root-only (0600): flock needs nothing more than a read-only fd, so with the
+# usual 0644 any local user could hold the lock and make every run skip the
+# check. The chmod covers a 0644 file left by an older version (/run is
+# tmpfs, so a reboot clears it too). A held lock is reported as an ERROR: the
+# unit still succeeds, but this run did not check the pool.
 LOCK_FILE="/run/fsbackup-scrub.lock"
-exec 9>"$LOCK_FILE" || { error scrub "cannot open lock file ${LOCK_FILE}"; exit 2; }
-flock -n 9 || { event scrub "another scrub check is already running, exiting"; exit 0; }
+( umask 077; : >>"$LOCK_FILE" ) 2>/dev/null
+chmod 0600 "$LOCK_FILE" 2>/dev/null
+exec 9>>"$LOCK_FILE" || { error scrub "cannot open lock file ${LOCK_FILE}"; exit 2; }
+flock -n 9 || { error scrub "another scrub check is already running (${LOCK_FILE} is locked); this run did not check the pool"; exit 0; }
 
 # -----------------------------------------------------------------------------
 # Pool

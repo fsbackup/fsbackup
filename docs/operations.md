@@ -199,6 +199,12 @@ If a scrub is already running when the job starts (for example the one Ubuntu's
 and checks its result instead of starting another. If a resilver is running, the job waits
 for it to finish, then scrubs.
 
+Only one check runs at a time (lock: `/run/fsbackup-scrub.lock`, root-only). A second one
+started meanwhile logs `ERROR another scrub check is already running …` and exits 0
+without checking. The unit has a two-day start timeout (`TimeoutStartSec=2d`): a check
+that hangs is stopped and the unit fails with `Result=timeout`. The scrub itself carries on
+in the kernel (`zpool status backup`), and the next run waits for it.
+
 Output:
 
 - journald (`journalctl -u fsbackup-scrub`): the start line, one result line for the pool,
