@@ -682,7 +682,7 @@ async def api_restore(
         # Safety: must be within SNAPSHOT_ROOT
         try:
             resolved = snap.resolve()
-            if not str(resolved).startswith(str(SNAPSHOT_ROOT)):
+            if not resolved.is_relative_to(SNAPSHOT_ROOT):
                 error = f"Snapshot path must be within {SNAPSHOT_ROOT}"
             elif not resolved.is_dir():
                 error = f"Snapshot directory not found: {snapshot_path}"
