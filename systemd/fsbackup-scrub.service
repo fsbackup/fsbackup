@@ -4,5 +4,8 @@ Description=fsbackup ZFS pool scrub
 [Service]
 UMask=0022
 Type=oneshot
+# The scrub runs in the foreground (zpool scrub -w) and takes hours. Oneshot
+# units already have no start timeout by default; this keeps it that way.
+TimeoutStartSec=infinity
 User=root
 ExecStart=/opt/fsbackup/bin/fs-scrub-check.sh
