@@ -130,6 +130,9 @@ Line format everywhere: `<date -Is> [<tag>] <msg>`; errors carry `ERROR `.
 Rotation: `/etc/logrotate.d/fsbackup` — daily, 30 kept, `copytruncate`, `dateext` → `<name>.log-YYYYMMDD`, older ones `.gz`.
 Units set `SyslogIdentifier=fsbackup-<job>` (templated: `fsbackup-runner-<class>`, `fsbackup-doctor-<class>`).
 The fsbackup-user job units have `LogsDirectory=fsbackup` + `LogsDirectoryMode=0750`; never add that to a `User=root` unit (systemd would chown the dir to root).
+Root-run scripts (e.g. `fs-scrub-check.sh`): when `EUID` is 0, `lib/log.sh` does every file write (and its `mkdir`) as fsbackup via `setpriv`,
+because fsbackup owns `LOG_DIR` and could plant a symlink (`scrub.log -> /etc/shadow`) that a root `>>` or `chown` would follow.
+So root code must never open, create or `chown` anything in `LOG_DIR` itself; just use the helpers. New files stay fsbackup-owned, so logrotate can rotate them.
 The web log viewer (`/api/journal/<unit>`) reads the current file + newest uncompressed rotated file, and falls back to `journalctl -u` when a unit has no file yet.
 
 ---
@@ -153,7 +156,7 @@ The `fsbackup` user runs most services. Exceptions:
 - Logging: source `lib/log.sh` (`. "$(dirname "$(readlink -f "$0")")/../lib/log.sh"`), call `log_init <basename>`, then
   `log <tag> msg` (file only: detail), `event <tag> msg` (file + stdout: start/end, per-target result, summary),
   `error <tag> msg` (file + stderr, prefixed `ERROR `: errors and warnings), `cmd 2>&1 | log_stream <tag>` (command output to file).
-  Never `>>"$LOG_FILE"` directly — the helpers keep the job running if LOG_DIR is unwritable.
+  Never `>>"$LOG_FILE"` directly — the helpers keep the job running if LOG_DIR is unwritable, and drop to fsbackup for the write when run as root.
 - Prometheus metrics: write `.prom` files to node exporter textfile dir, then `mv` atomically
 - Prom file permissions: `chgrp nodeexp_txt ... 2>/dev/null || true` + `chmod 0644`
 - AWS CLI calls use `--profile fsbackup`

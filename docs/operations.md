@@ -85,7 +85,9 @@ cat     /var/log/fsbackup/scrub.log           # monthly ZFS scrub (full zpool st
 The directory is `LOG_DIR` in `fsbackup.conf`. It must be owned by `fsbackup:fsbackup`
 (mode 0750); the job units also create `/var/log/fsbackup` with that ownership if it
 is missing (`LogsDirectory=`). If a job can't write its log file it still runs, still
-logs to the journal, and prints one `WARN cannot write …` line.
+logs to the journal, and prints one `WARN cannot write …` line. A job that runs as root
+(the ZFS scrub, or a script started with plain `sudo`) writes its log file as `fsbackup`
+(through `setpriv`), so every file in the directory stays `fsbackup`-owned.
 
 logrotate (`/etc/logrotate.d/fsbackup`, from `conf/logrotate.fsbackup`) rotates the
 files daily and keeps 30: `backup-class1.log-20260922` is yesterday's file, and older
