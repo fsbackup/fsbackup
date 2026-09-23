@@ -150,7 +150,7 @@ FastAPI + HTMX + Tailwind CDN. `fsbackup-web.service` on `0.0.0.0:8080`.
 | `/snapshots` | Filterable snapshot browser; orphan rows highlighted red with inline delete |
 | `/logs` | Log viewer (per-class sections) + Prometheus metrics table |
 | `/restore` | Restore files from a snapshot |
-| `/run` | Trigger runner/doctor/retention jobs |
+| `/run` | Trigger runner/doctor per class; retention (preview/prune) and S3 export |
 | `/s3` | S3 offsite bucket browser |
 | `/configuration` | Tabbed config: Hosts, Targets, Schedule, Volumes & Maintenance |
 | `/browse` | Filesystem browser inside a snapshot |

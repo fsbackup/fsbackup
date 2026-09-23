@@ -376,7 +376,14 @@ def _build_job_commands() -> dict[str, list[str]]:
         "doctor-class1": [str(b / "fs-doctor.sh"), "--class", "class1"],
         "doctor-class2": [str(b / "fs-doctor.sh"), "--class", "class2"],
         "doctor-class3": [str(b / "fs-doctor.sh"), "--class", "class3"],
+        # System jobs (not per class)
+        "retention-dryrun": [str(b / "fs-retention.sh"), "--dry-run"],
+        "retention":        [str(b / "fs-retention.sh")],
+        "s3-export":        [str(SCRIPTS_DIR / "s3" / "fs-export-s3.sh")],
     }
+
+# Run-page system job keys (subset of _JOB_COMMANDS with no class)
+_SYSTEM_JOBS = ["retention-dryrun", "retention", "s3-export"]
 
 _JOB_COMMANDS = _build_job_commands()
 _jobs: dict[str, dict] = {}
@@ -720,11 +727,13 @@ async def run_page(request: Request):
             "runner": _job_status(f"runner-{cls}"),
             "doctor": _job_status(f"doctor-{cls}"),
         }
+    system = {key: _job_status(key) for key in _SYSTEM_JOBS}
     tails = {key: _job_tail(key) for key in _JOB_COMMANDS}
 
     return templates.TemplateResponse("run.html", {
         "request":        request,
         "units":          units,
+        "system":         system,
         "classes":        CLASSES,
         "tails":          tails,
     })
@@ -739,10 +748,12 @@ async def api_run_status(request: Request):
             "runner": _job_status(f"runner-{cls}"),
             "doctor": _job_status(f"doctor-{cls}"),
         }
+    system = {key: _job_status(key) for key in _SYSTEM_JOBS}
     tails = {key: _job_tail(key) for key in _JOB_COMMANDS}
     return templates.TemplateResponse("partials/run_status.html", {
         "request": request,
         "units":   units,
+        "system":  system,
         "tails":   tails,
     })
 
@@ -835,6 +846,7 @@ _LOG_SECTIONS = [
     ("fsbackup-runner-daily@class2.service",   "Backup — class2",   "backup-class2.log"),
     ("fsbackup-runner-daily@class3.service",   "Backup — class3",   "backup-class3.log"),
     ("fsbackup-s3-export.service",             "S3 export",         "s3-export.log"),
+    ("fsbackup-retention.service",             "Retention",         "retention.log"),
     ("fsbackup-doctor@class1.service",         "Doctor — class1",   "journal"),
     ("fsbackup-doctor@class2.service",         "Doctor — class2",   "journal"),
     ("fsbackup-doctor@class3.service",         "Doctor — class3",   "journal"),
@@ -1286,6 +1298,7 @@ _LOG_DIR = Path("/var/lib/fsbackup/log")
 # exposed under the pseudo-unit "fs-orphans".
 _UNIT_LOG_MAP = [
     ("fsbackup-s3-export",   _LOG_DIR / "s3-export.log"),
+    ("fsbackup-retention",   _LOG_DIR / "retention.log"),
     ("fs-orphans",           _LOG_DIR / "fs-orphans.log"),
     ("fsbackup-scrub",       _LOG_DIR / "s3-export.log"),  # scrub logs to s3 file for now
 ]
@@ -1413,7 +1426,8 @@ async def api_rename_target(
 @app.post("/api/run/{action}", response_class=HTMLResponse)
 async def api_run(request: Request, action: str, cls: str = Form(default="")):
     """
-    Trigger a backup job. action: runner | doctor
+    Trigger a job. action: runner | doctor (with cls), or a class-less system
+    job: retention-dryrun | retention | s3-export
     Spawns the script directly as a subprocess; output streamed into an
     in-memory deque visible via the status poller. No systemd dependency.
     """

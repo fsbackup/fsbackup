@@ -131,6 +131,12 @@ EXIT_CODE=$([[ "$FAILED" -gt 0 ]] && echo 1 || echo 0)
 
 log "Retention complete: destroyed=${DESTROYED} kept=${KEPT} failed=${FAILED} duration=${DURATION}s"
 
+# A dry run must not publish metrics — it would report would-be destroys as
+# real ones and advance last_run as if retention had actually run.
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  exit "$EXIT_CODE"
+fi
+
 # Prometheus metrics
 tmp="$(mktemp)"
 cat >"$tmp" <<EOF

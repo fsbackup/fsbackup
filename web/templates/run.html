@@ -101,6 +101,63 @@
   {% endfor %}
 </div>
 
+{% macro job_row(key, title, subtitle, btn_label, btn_class, confirm="") %}
+    <div class="flex items-center justify-between">
+      <div>
+        <p class="text-xs font-medium text-zinc-700 dark:text-zinc-300">{{ title }}</p>
+        <p class="text-xs text-zinc-400 font-mono">{{ subtitle }}</p>
+      </div>
+      <div class="flex items-center gap-2">
+        {{ badge("status-" ~ key, system[key]) }}
+        <form hx-post="/api/run/{{ key }}"
+              hx-target="#{{ key }}-result"
+              hx-swap="innerHTML"
+              {% if confirm %}hx-confirm="{{ confirm }}"{% endif %}
+              hx-on:htmx:before-request="this.querySelector('button').disabled=true; this.querySelector('button').textContent='Starting…'"
+              hx-on:htmx:after-request="this.querySelector('button').disabled=false; this.querySelector('button').textContent='{{ btn_label }}'">
+          <button type="submit"
+                  class="{{ btn_class }} disabled:opacity-50 text-white text-xs font-medium px-3 py-1.5 rounded-lg transition-colors">
+            {{ btn_label }}
+          </button>
+        </form>
+      </div>
+    </div>
+    <div id="{{ key }}-result"></div>
+    <div id="tail-{{ key }}">{% if tails.get(key) %}<pre class="text-xs font-mono text-zinc-400 bg-zinc-950/60 rounded-lg p-2 mt-1 overflow-x-auto max-h-28 overflow-y-auto whitespace-pre-wrap break-all">{{ tails[key] | join('\n') | e }}</pre>{% endif %}</div>
+{% endmacro %}
+
+<!-- System jobs (not per class) -->
+<h2 class="text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-3">System</h2>
+<div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-8">
+  <div class="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl p-5 shadow-sm space-y-4">
+    <h3 class="text-sm font-bold text-zinc-900 dark:text-white uppercase tracking-wide">Retention</h3>
+    {{ job_row("retention-dryrun", "Preview", "fs-retention.sh --dry-run",
+               "Preview", "bg-brand-600 hover:bg-brand-500") }}
+    <div class="border-t border-zinc-100 dark:border-zinc-800 pt-4 space-y-4">
+    {{ job_row("retention", "Prune now", "fs-retention.sh",
+               "Prune", "bg-red-600 hover:bg-red-500",
+               "Destroy all snapshots outside the KEEP_* retention policy now? This cannot be undone — run Preview first to see what would be removed.") }}
+    </div>
+    <button type="button"
+            onclick="openJournalModal('fsbackup-retention.service')"
+            class="text-xs text-zinc-400 hover:text-zinc-200 transition-colors">
+      ▶ Logs
+    </button>
+  </div>
+
+  <div class="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl p-5 shadow-sm space-y-4">
+    <h3 class="text-sm font-bold text-zinc-900 dark:text-white uppercase tracking-wide">S3 export</h3>
+    {{ job_row("s3-export", "Export", "fs-export-s3.sh",
+               "Start", "bg-brand-600 hover:bg-brand-500") }}
+    <p class="text-xs text-zinc-500">Uploads weekly/monthly/annual snapshots not already in S3. Runs inside the web service — restarting fsbackup-web stops it.</p>
+    <button type="button"
+            onclick="openJournalModal('fsbackup-s3-export.service')"
+            class="text-xs text-zinc-400 hover:text-zinc-200 transition-colors">
+      ▶ Logs
+    </button>
+  </div>
+</div>
+
 <!-- Journal modal -->
 <div id="journal-modal"
      class="fixed inset-0 z-50 hidden items-center justify-center bg-black/70 backdrop-blur-sm p-4"
