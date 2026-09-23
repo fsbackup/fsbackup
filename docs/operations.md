@@ -147,6 +147,10 @@ sudo -u fsbackup /opt/fsbackup/bin/fs-retention.sh --dry-run
 sudo -u fsbackup /opt/fsbackup/bin/fs-retention.sh
 ```
 
+`--dry-run` prints each snapshot it would destroy (`DRY   zfs destroy <snapshot>`),
+publishes no metrics, and destroys nothing. A real run prints only the start line, the
+summary and any failures; the per-snapshot keep/destroy decisions are in `retention.log`.
+
 ### Run the S3 export manually
 
 ```bash

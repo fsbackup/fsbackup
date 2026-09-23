@@ -18,6 +18,9 @@ set -o pipefail
 #
 # Logging (lib/log.sh): $LOG_DIR/retention.log gets every keep/destroy
 # decision; journald gets the run start, the summary and any failures.
+# With --dry-run the "DRY   zfs destroy <snap>" lines also go to stdout: that
+# list is the preview (web UI Run > Retention > Preview shows the process
+# output). The timer never passes --dry-run, so journald is unaffected.
 # =============================================================================
 
 . /etc/fsbackup/fsbackup.conf
@@ -108,7 +111,7 @@ for dataset in "${!snap_lists[@]}"; do
       snap="${snaps[$i]}"
       full="${dataset}@${snap}"
       if [[ "$DRY_RUN" -eq 1 ]]; then
-        log "retention" "DRY   zfs destroy ${full}"
+        event "retention" "DRY   zfs destroy ${full}"
         DESTROYED=$((DESTROYED + 1))
       else
         log "retention" "DESTROY ${full}"
