@@ -170,7 +170,7 @@ FastAPI + HTMX + Tailwind CDN. `fsbackup-web.service` on `0.0.0.0:8080`.
 - **main is branch-protected** — always branch + PR
 - Deploy: `sudo rsync -a --delete --exclude='.git' --exclude='web/.venv' --exclude='web/.env' --exclude='conf/targets.yml' /home/crash/projects/fsbackup/ /opt/fsbackup/`
 - `conf/targets.yml` is gitignored — never commit it
-- Current release: **v2.0.1**
+- Current release: **v2.1.0**
 
 ## Known Issues / Open Work
 
