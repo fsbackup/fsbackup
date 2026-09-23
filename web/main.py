@@ -434,6 +434,13 @@ def _build_job_commands() -> dict[str, list[str]]:
 # Run-page system job keys (subset of _JOB_COMMANDS with no class)
 _SYSTEM_JOBS = ["retention-dryrun", "retention", "s3-export"]
 
+# Output lines kept per Run-page job (the scrollable tail under its button).
+# The retention preview keeps more: its output is the list of snapshots that
+# would be pruned, one "DRY   zfs destroy <snapshot>" line each, and that list
+# is the point of the preview. retention.log always has the full list.
+_JOB_TAIL_LINES = 20
+_JOB_TAIL_LINES_FOR = {"retention-dryrun": 500}
+
 _JOB_COMMANDS = _build_job_commands()
 _jobs: dict[str, dict] = {}
 _jobs_lock = threading.Lock()
@@ -1732,7 +1739,7 @@ async def api_run(request: Request, action: str, cls: str = Form(default="")):
                     "rc":         None,
                     "started_at": datetime.now(),
                     "ended_at":   None,
-                    "lines":      deque(maxlen=20),
+                    "lines":      deque(maxlen=_JOB_TAIL_LINES_FOR.get(key, _JOB_TAIL_LINES)),
                 }
             threading.Thread(target=_stream_job, args=(key, proc), daemon=True).start()
             result_ok  = True
