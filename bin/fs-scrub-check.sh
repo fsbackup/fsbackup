@@ -192,17 +192,31 @@ scrub_parse_status() {
 }
 
 # scrub_prom_value <prom_file> <metric> <pool> — print the metric value for
-# pool="<pool>" from an existing prom file (nothing if absent).
+# pool="<pool>" from an existing prom file (nothing if absent or not a plain
+# non-negative number).
+# This runs as root, and the textfile dir is writable by fsbackup and the
+# nodeexp_txt group, so the file is untrusted: only a regular file is read
+# (not a symlink, which root would follow, and not a FIFO, which would block),
+# the read is time-limited in case the file is swapped after the check, and
+# only a number comes back.
 scrub_prom_value() {
   local file="$1" metric="$2" pool="$3"
-  [[ -r "$file" ]] || return 0
-  awk -v key="${metric}{pool=\"${pool}\"}" '$1 == key { v = $2 } END { if (v != "") print v }' "$file"
+  [[ -f "$file" && ! -L "$file" && -r "$file" ]] || return 0
+  timeout 10 awk -v key="${metric}{pool=\"${pool}\"}" '
+    $1 == key { v = $2 }
+    END { if (v ~ /^[0-9]+(\.[0-9]+)?$/) print v }' "$file" 2>/dev/null
+  return 0
 }
 
 # scrub_write_prom <out_file> <pool> <assoc-array-name>
 # Writes fsbackup_scrub.prom atomically (tmp + mv). The array holds the values
 # by key: last_run last_success success problems duration scan_errors
 # repaired_bytes device_errors data_errors. Empty/missing keys are left out.
+# The tmp file is made in /tmp (sticky, so nobody else can swap it before the
+# chgrp/chmod), not in the group-writable textfile dir. mv -T renames onto
+# <out_file> itself: without it, a symlink to a directory planted at
+# <out_file> would make root move the tmp file into that directory and the
+# metric would silently not update.
 scrub_write_prom() {
   local out="$1" pool="$2"
   local -n _vals="$3"
@@ -228,7 +242,7 @@ scrub_write_prom() {
   done >"$tmp"
   chgrp nodeexp_txt "$tmp" 2>/dev/null || true
   chmod 0644 "$tmp"
-  mv "$tmp" "$out"
+  mv -fT "$tmp" "$out" || { rm -f "$tmp"; return 1; }
 }
 
 # Stop here when sourced (tests); everything below is the actual run.
