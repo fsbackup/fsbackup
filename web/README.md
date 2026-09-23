@@ -79,7 +79,7 @@ step and no Node.js requirement.
 
 | Tab | Description |
 |-----|-------------|
-| Hosts | Lists all unique hosts from `targets.yml`; instructions for trusting a new host's SSH key via `fs-trust-host.sh` |
+| Hosts | Lists all unique hosts from `targets.yml` with SSH host key trust state; scan a host, verify its fingerprint, and trust it (`fs-trust-host.sh --scan` / `--expect`, runs as fsbackup — no sudo) |
 | Targets | Targets table grouped by class; link to edit `targets.yml`; rename instructions via `fs-target-rename.sh` |
 | Schedule | Read-only view of the systemd timers — runner schedules from `fsbackup.conf` plus the fixed timers — with their `OnCalendar` expressions |
 | Volumes & Maintenance | ZFS usage for the snapshot root, per-target dataset sizes, and S3 bucket object count/size; node exporter troubleshooting |

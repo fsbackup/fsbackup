@@ -190,7 +190,7 @@ Repository path: **utils/**
 | Filename | Name | Description | Parameters |
 |----------|------|-------------|------------|
 | `fs-restore.sh` | Restore files | Browse available snapshots and restore files to a local path or push to a remote host over SSH. See the [Restore](#restore) section. | `list --class <class> [--type <type>]`; `restore --class <class> --id <id> [--snapshot <name>\|--latest] --to <path>` |
-| `fs-trust-host.sh` | Seed SSH host keys | Adds a host's SSH key to the backup user's `known_hosts`. Run once when adding a new host. | `<hostname>` |
+| `fs-trust-host.sh` | Seed SSH host keys | Adds a host's SSH key to the backup user's `known_hosts`. Run once when adding a new host (or use Configuration → Hosts in the web UI). | `[--scan \| --expect <fp>] <hostname>` |
 | `fs-target-rename.sh` | Rename a target | Renames (or deletes) a ZFS dataset when a target ID changes in `targets.yml`. | `--class <class> --from <old-id> --to <new-id> --move\|--delete` |
 
 ---

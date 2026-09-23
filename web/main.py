@@ -1165,6 +1165,92 @@ def _fmt_bytes(n: int) -> str:
     return f"{n:.1f} PB"
 
 
+# ---------------------------------------------------------------------------
+# SSH host keys (Configuration → Hosts) — fs-trust-host.sh runs as fsbackup
+# ---------------------------------------------------------------------------
+
+_KNOWN_HOSTS  = Path("/var/lib/fsbackup/.ssh/known_hosts")
+_HOSTNAME_RE  = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$")
+_HOST_FP_RE   = re.compile(r"^SHA256:[A-Za-z0-9+/]{43}$")
+
+
+def _is_local_host(host: str) -> bool:
+    """Mirror fs-runner.sh is_local_host: these targets rsync locally, no SSH."""
+    import socket
+    return host in ("localhost", socket.gethostname().split(".")[0], socket.getfqdn())
+
+
+def _host_key_status(host: str) -> dict:
+    """Trust state of a host in fsbackup's known_hosts (entries may be hashed,
+    so look each host up with ssh-keygen -F rather than parsing the file)."""
+    if _is_local_host(host):
+        return {"local": True, "trusted": False, "fingerprint": ""}
+    try:
+        found = subprocess.run(["ssh-keygen", "-F", host, "-f", str(_KNOWN_HOSTS)],
+                               capture_output=True, text=True, timeout=5)
+        keys = "\n".join(l for l in found.stdout.splitlines() if l and not l.startswith("#"))
+        if found.returncode != 0 or not keys:
+            return {"local": False, "trusted": False, "fingerprint": ""}
+        fps = subprocess.run(["ssh-keygen", "-lf", "/dev/stdin"], input=keys + "\n",
+                             capture_output=True, text=True, timeout=5).stdout.splitlines()
+        # Prefer the ed25519 key (what fs-trust-host.sh seeds)
+        fp = next((l.split()[1] for l in fps if "(ED25519)" in l),
+                  fps[0].split()[1] if fps else "")
+        return {"local": False, "trusted": True, "fingerprint": fp}
+    except Exception:
+        return {"local": False, "trusted": False, "fingerprint": ""}
+
+
+def _run_trust_script(*args: str) -> tuple[int, str]:
+    script = SCRIPTS_DIR / "utils" / "fs-trust-host.sh"
+    try:
+        r = subprocess.run([str(script), *args], capture_output=True, text=True, timeout=30)
+        return r.returncode, (r.stdout + r.stderr).strip()
+    except subprocess.TimeoutExpired:
+        return 1, "fs-trust-host.sh timed out"
+    except Exception as e:
+        return 1, str(e)
+
+
+@app.post("/api/hosts/scan", response_class=HTMLResponse)
+async def api_hosts_scan(request: Request, host: str = Form(...)):
+    """Step 1: fetch the host's ed25519 key fingerprint for the operator to verify."""
+    host = host.strip()
+    ctx = {"request": request, "host": host, "step": "error", "message": "", "fingerprint": ""}
+    if not _HOSTNAME_RE.match(host):
+        ctx["message"] = "Invalid hostname — letters, digits, dots and dashes only."
+    elif _is_local_host(host):
+        ctx["message"] = f"{host} is this machine — local targets don't use SSH."
+    else:
+        rc, out = _run_trust_script("--scan", host)
+        fp = next((l.split()[1] for l in out.splitlines() if l.startswith("FINGERPRINT ")), "")
+        if rc != 0 or not _HOST_FP_RE.match(fp):
+            ctx["message"] = out.splitlines()[-1] if out else "Scan failed"
+        elif "already present" in out:
+            ctx.update(step="present", fingerprint=fp,
+                       stored=_host_key_status(host)["fingerprint"])
+        else:
+            ctx.update(step="confirm", fingerprint=fp)
+    return templates.TemplateResponse("partials/host_trust.html", ctx)
+
+
+@app.post("/api/hosts/trust", response_class=HTMLResponse)
+async def api_hosts_trust(request: Request, host: str = Form(...), fingerprint: str = Form(...)):
+    """Step 2: write the key — only if the host still presents the confirmed fingerprint."""
+    host, fingerprint = host.strip(), fingerprint.strip()
+    ctx = {"request": request, "host": host, "step": "error", "message": "", "fingerprint": fingerprint}
+    if not _HOSTNAME_RE.match(host) or not _HOST_FP_RE.match(fingerprint):
+        ctx["message"] = "Invalid hostname or fingerprint."
+    else:
+        rc, out = _run_trust_script("--expect", fingerprint, host)
+        if rc == 0:
+            ctx["step"] = "trusted"
+            ctx["message"] = out.splitlines()[-1] if out else "Trusted"
+        else:
+            ctx["message"] = out.splitlines()[-1] if out else "Trust failed"
+    return templates.TemplateResponse("partials/host_trust.html", ctx)
+
+
 @app.get("/configuration", response_class=HTMLResponse)
 async def configuration_page(request: Request, tab: str = "hosts"):
     targets = load_targets()
@@ -1178,6 +1264,7 @@ async def configuration_page(request: Request, tab: str = "hosts"):
             if h and h not in seen:
                 seen.add(h)
                 hosts.append(h)
+    host_keys = {h: _host_key_status(h) for h in hosts} if tab == "hosts" else {}
 
     # Build per-target ZFS dataset size (used bytes, including snapshots).
     # One `zfs list` call for all datasets under SNAPSHOT_ROOT.
@@ -1214,6 +1301,7 @@ async def configuration_page(request: Request, tab: str = "hosts"):
         "request":        request,
         "tab":            tab,
         "hosts":          hosts,
+        "host_keys":      host_keys,
         "targets":        targets,
         "target_volumes": target_volumes,
         "primary_disk":   primary_disk,
