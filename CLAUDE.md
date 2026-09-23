@@ -123,6 +123,7 @@ The `fsbackup` user runs most services. Exceptions:
 - `fs-db-export@.service`: `User=root` (needs `docker exec`)
 - Orphan dataset deletion in web UI: `sudo zfs destroy -r <dataset>` — allowed via `/etc/sudoers.d/fsbackup-zfs-destroy` (NOPASSWD, scoped to `SNAPSHOT_ROOT/*/*`). Created automatically by `fs-install.sh`.
 - Runner auto-provisioning: `sudo fs-provision.sh` — `/etc/sudoers.d/fsbackup-provision`.
+- Web UI rename target: `sudo fs-target-rename.sh …` — `/etc/sudoers.d/fsbackup-target-rename`.
 - Web UI schedule edits: `sudo fs-schedule-set.sh <KEY> <OnCalendar>` — `/etc/sudoers.d/fsbackup-schedule`. `fsbackup.conf` is sourced as root, so the script validates key + value itself.
 
 ---

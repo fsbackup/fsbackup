@@ -13,3 +13,6 @@
   {{ result_msg }}
 </div>
 {% endif %}
+{% if output %}
+<pre class="text-xs font-mono text-zinc-400 bg-zinc-950/60 rounded-lg p-2 mt-2 overflow-x-auto max-h-40 overflow-y-auto whitespace-pre-wrap break-all">{{ output }}</pre>
+{% endif %}
