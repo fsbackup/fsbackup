@@ -36,6 +36,7 @@ web/
     browse.html          # Filesystem browser inside a snapshot
     restore.html         # Restore form
     run.html             # Trigger runner/doctor jobs; live status + log tail
+    logs.html            # Logs page: Live tab (log panels + metrics) and History tab
     s3.html              # S3 offsite bucket browser
     configuration.html   # Tabbed configuration page (Hosts, Targets, Schedule, Volumes)
     utilities.html       # Stub — redirects to Configuration and Restore
@@ -43,6 +44,10 @@ web/
       snapshot_rows.html   # HTMX swap target: snapshot table body
       dir_entries.html     # HTMX swap target: directory listing rows
       run_result.html      # HTMX swap target: inline start/error badge
+      journal.html         # Log viewer body (Live panels, reused by the History viewer)
+      log_history.html     # Logs > History tab body (sources, file list, viewer slots)
+      log_history_files.html  # HTMX swap target: one source's log files by date
+      log_history_view.html   # HTMX swap target: one log file in the viewer
 ```
 
 ### Stack
@@ -68,6 +73,7 @@ step and no Node.js requirement.
 | `GET /snapshots` | Snapshots | Filterable table of all local snapshots; defaults to daily tier + today |
 | `GET /restore` | Restore | Restore form with recent-snapshot quick-select sidebar |
 | `GET /run` | Run | Trigger runner/doctor per class; live status + log tail |
+| `GET /logs` | Logs | Live tab: per-job log panels + Prometheus metrics. History tab (`?tab=history`): rotated log files by date |
 | `GET /s3` | S3 Offsite | Prefix-based S3 bucket browser with presigned download |
 | `GET /configuration` | Configuration | Tabbed page: Hosts, Targets, Schedule, Volumes & Maintenance |
 | `GET /targets` | Targets | Parsed view of `/etc/fsbackup/targets.yml` (also in Configuration > Targets tab) |
@@ -84,6 +90,13 @@ step and no Node.js requirement.
 | Schedule | Read-only view of the systemd timers — runner schedules from `fsbackup.conf` plus the fixed timers — with their `OnCalendar` expressions |
 | Volumes & Maintenance | ZFS usage for the snapshot root, per-target dataset sizes, and S3 bucket object count/size; node exporter troubleshooting |
 
+### Logs page tabs
+
+| Tab | Description |
+|-----|-------------|
+| Live (`/logs`) | One collapsible panel per job showing the last lines of its log (current file + newest rotated one), with auto-refresh and pop-out; Prometheus metrics table |
+| History (`/logs?tab=history`) | Pick a source (backup / doctor per class, orphans, retention, S3 export, ZFS scrub), then a date: every rotated file logrotate keeps, newest first, opened in the log viewer with Older/Newer navigation and a raw download. `&source=<key>&date=<YYYYMMDD\|current>` deep-links to a file |
+
 ### HTMX partial endpoints
 
 | Route | Returns | Triggered by |
@@ -93,6 +106,10 @@ step and no Node.js requirement.
 | `GET /api/browse` | `partials/dir_entries.html` | *(reserved for future lazy tree)* |
 | `GET /api/s3/download?key=…` | Redirect to presigned URL | Download button on `/s3` |
 | `POST /api/run/{action}` | `partials/run_result.html` | Start buttons on `/run` |
+| `GET /api/journal/{unit}` | `partials/journal.html` | Log panels on `/logs` (Live) and `/run` |
+| `GET /api/logs/history/{source}` | `partials/log_history_files.html` | Source click on `/logs?tab=history` |
+| `GET /api/logs/history/{source}/{date}[?all=1]` | `partials/log_history_view.html` | Date click, Older/Newer, Show all |
+| `GET /api/logs/history/{source}/{date}/download` | The raw file (attachment) | Download button in the History viewer |
 
 ---
 
@@ -134,6 +151,29 @@ modifying any files.
 trusted host key are offered; the path must be absolute, use a conservative
 charset, and contain no `..`. The remote `backup` user can only write where its
 permissions allow (e.g. `/var/tmp/…`), so restore to a staging directory.
+
+### Logs (Logs page)
+
+Both tabs read the job log files directly from `LOG_DIR`, resolved once at startup
+by `_resolve_log_dir()`. The web user only needs read access, and nothing runs through
+sudo or a shell.
+
+The **History** tab lists `<source>.log`, `<source>.log-YYYYMMDD` and
+`<source>.log-YYYYMMDD.gz` (logrotate `dateext`). A file is dated the day it was
+rotated, just after midnight, so it mostly covers the day before. The list's
+*Starts* column shows each file's first timestamp.
+
+- **Path safety:** requests carry only a source key from a fixed allow-list and a
+  date (`YYYYMMDD` or `current`). Filenames come from scanning `LOG_DIR`, never
+  from the request. Only regular files are listed, files are opened with
+  `O_NOFOLLOW`, and anything else gets 400/404 with no paths in the error.
+- **`.gz` files** are decompressed in memory while streaming, with Python's `gzip`.
+  Nothing is extracted to disk.
+- **Size limits:** the viewer renders the last 5,000 lines. *Show all* renders up to
+  100,000; beyond that, use the download.
+- **Download** returns the file exactly as stored. A `.gz` is sent compressed
+  (`application/gzip`, `.gz` filename, no `Content-Encoding`), so the browser saves
+  it rather than inflating it; open it with `zless`.
 
 ---
 
