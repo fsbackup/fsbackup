@@ -262,10 +262,12 @@ LOG_DIR="${LOG_DIR:-/var/log/fsbackup}"
 # plant a symlink there (scrub.log -> /etc/shadow). lib/log.sh sees EUID 0 and
 # does every file write, and log_init's mkdir, as fsbackup via setpriv: root
 # never opens or creates a path in LOG_DIR, and scrub.log stays fsbackup-owned
-# for logrotate (su fsbackup, copytruncate). Don't open, create or chown
-# anything in LOG_DIR here; use log/event/error/log_stream only. If LOG_DIR is
-# missing (fsbackup can't create it under /var/log) the check still runs, the
-# journal gets one "[log] WARN cannot write ..." line, and file lines are lost.
+# for logrotate (su fsbackup, copytruncate). Those writes never block, so a
+# FIFO planted at scrub.log can't hang the check either. Don't open, create
+# or chown anything in LOG_DIR here; use log/event/error/log_stream only. If
+# LOG_DIR is missing (fsbackup can't create it under /var/log) the check
+# still runs, the journal gets one "[log] WARN cannot write ..." line, and
+# file lines are lost.
 log_init scrub
 
 trap 'error scrub "interrupted by signal; a running scrub continues in the kernel (zpool status)"; exit 1' INT TERM

@@ -38,8 +38,17 @@
 # or chown log files themselves. If the drop fails (no fsbackup user, no
 # setpriv), file logging is off for the run, with the usual single warning.
 #
-# Plain bash; setpriv (util-linux) is needed only when running as root. Safe
-# under `set -u` and `set -o pipefail`.
+# fsbackup could also put a FIFO there (mkfifo scrub.log). Opening a FIFO for
+# writing blocks until something reads it, so a plain `>>` or `tee -a` would
+# hang the job. So as root the fsbackup-side writer is dd with oflag=nonblock:
+# on a FIFO the open fails at once (ENXIO), and if something reads the FIFO
+# but stops, the write fails (EAGAIN) instead of blocking. O_NONBLOCK changes
+# nothing for a regular file. Not as root, a LOG_FILE that exists but isn't a
+# regular file is skipped (only the job user itself could have put it there).
+# Either way file logging is off for the run, with the usual single warning.
+#
+# Plain bash; setpriv (util-linux) and dd (coreutils) are used only when
+# running as root. Safe under `set -u` and `set -o pipefail`.
 # =============================================================================
 
 LOG_DIR="${LOG_DIR:-/var/log/fsbackup}"
@@ -75,13 +84,29 @@ _log_as_user() {
   setpriv --reuid="$_LOG_AS_USER" --regid="$_LOG_AS_USER" --clear-groups -- "$@"
 }
 
+# _log_append_as_user: append stdin to LOG_FILE as $_LOG_AS_USER, never
+# blocking on the open (see the FIFO note above). conv=notrunc keeps the
+# existing lines; bs= writes each chunk as soon as it is read, so streamed
+# lines reach the file as they come. Only used when running as root.
+_log_append_as_user() {
+  _log_as_user dd bs=65536 of="$LOG_FILE" oflag=append,nonblock conv=notrunc status=none
+}
+
+# _log_file_ok: (not as root) LOG_FILE is missing, so >> creates it, or is a
+# regular file. Anything else, such as a FIFO or a directory, is skipped.
+_log_file_ok() {
+  [[ ! -e "$LOG_FILE" || -f "$LOG_FILE" ]]
+}
+
 # _log_write <line>: append one line to LOG_FILE. Never fails.
 _log_write() {
   [[ -n "$LOG_FILE" ]] || return 0
   if [[ -n "$_LOG_AS_USER" ]]; then
-    _log_as_user tee -a -- "$LOG_FILE" >/dev/null 2>&1 <<<"$1" || _log_warn_once
-  else
+    _log_append_as_user >/dev/null 2>&1 <<<"$1" || _log_warn_once
+  elif _log_file_ok; then
     { printf '%s\n' "$1" >>"$LOG_FILE"; } 2>/dev/null || _log_warn_once
+  else
+    _log_warn_once
   fi
   return 0
 }
@@ -92,10 +117,14 @@ log_init() {
   LOG_FILE="${LOG_DIR}/${1:-fsbackup}.log"
   if [[ -n "$_LOG_AS_USER" ]]; then
     _log_as_user mkdir -p -- "$LOG_DIR" >/dev/null 2>&1 || true
-    _log_as_user tee -a -- "$LOG_FILE" </dev/null >/dev/null 2>&1 || _log_warn_once
+    _log_append_as_user </dev/null >/dev/null 2>&1 || _log_warn_once
   else
     mkdir -p "$LOG_DIR" 2>/dev/null || true
-    { : >>"$LOG_FILE"; } 2>/dev/null || _log_warn_once
+    if _log_file_ok; then
+      { : >>"$LOG_FILE"; } 2>/dev/null || _log_warn_once
+    else
+      _log_warn_once
+    fi
   fi
   return 0
 }
@@ -139,7 +168,7 @@ log_stream() {
         _log_ts
         printf '%s [%s] %s\n' "$_LOG_TS" "$tag" "$line" 2>/dev/null
       done
-    ) | _log_as_user tee -a -- "$LOG_FILE" >/dev/null 2>&1 || _log_warn_once
+    ) | _log_append_as_user >/dev/null 2>&1 || _log_warn_once
     return 0
   fi
   while IFS= read -r line || [[ -n "$line" ]]; do
