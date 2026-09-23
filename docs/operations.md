@@ -43,6 +43,18 @@ Doctor summary
 Any `FAIL` must be resolved before the runner will succeed for that target. A `WARN`
 for a missing dataset clears itself once the target is provisioned (see below).
 
+The report ends with a pool-level **ZFS scrub** line, read from the metrics that
+`fs-scrub-check.sh` writes. It warns if the last scrub check failed, or if the last clean
+scrub is more than `SCRUB_MAX_AGE_DAYS` (default 35) days old:
+
+```
+ZFS scrub
+backup                       OK     last clean scrub 2026-10-05 (3 days ago)
+```
+
+This line is informational: it isn't counted in the target summary. See
+[ZFS scrub](#zfs-scrub) below.
+
 ### Logs
 
 Runner logs are per class; other jobs have their own files under
@@ -53,6 +65,7 @@ tail -f /var/lib/fsbackup/log/backup-class1.log   # runner — class1
 tail -f /var/lib/fsbackup/log/backup-class2.log   # runner — class2
 tail -f /var/lib/fsbackup/log/retention.log       # retention
 tail -f /var/lib/fsbackup/log/s3-export.log       # S3 export
+cat     /var/lib/fsbackup/log/scrub.log           # monthly ZFS scrub (full zpool status)
 cat     /var/lib/fsbackup/log/fs-orphans.log      # doctor orphan scan
 ```
 
@@ -110,6 +123,18 @@ sudo -u fsbackup /opt/fsbackup/s3/fs-export-s3.sh
 
 Idempotent — it uploads any weekly/monthly snapshots not already in the bucket.
 
+### Run a ZFS scrub check manually
+
+The scrub runs as root and blocks until the scrub has finished (about an hour on `fs`),
+so start it without waiting and follow the journal:
+
+```bash
+sudo systemctl start --no-block fsbackup-scrub.service
+journalctl -fu fsbackup-scrub.service
+```
+
+See [ZFS scrub](#zfs-scrub) for what it checks.
+
 ### Trigger a job through systemd
 
 Starting the service (rather than the timer) runs it immediately:
@@ -154,6 +179,69 @@ sudo zfs destroy -r backup/snapshots/<class>/<target>
 ```
 
 Run the doctor again afterward to confirm the orphan count drops to zero.
+
+---
+
+## ZFS scrub
+
+`fsbackup-scrub.timer` runs `fs-scrub-check.sh` as root on the 5th of each month at
+03:00. It scrubs the backup pool (`ZFS_POOL` in `fsbackup.conf`, default: the pool that
+holds `SNAPSHOT_ROOT`, i.e. `backup`) with `zpool scrub -w`. Once the scrub has finished
+it checks `zpool status -p` and **fails the unit** if any of these is true:
+
+- the pool state isn't `ONLINE`, or any vdev isn't `ONLINE`
+- any vdev has a non-zero `READ`, `WRITE` or `CKSUM` counter
+- the scrub repaired data or reported errors, or didn't complete (canceled, paused)
+- the `errors:` line is anything other than `No known data errors`
+
+If a scrub is already running when the job starts (for example the one Ubuntu's
+`zfsutils-linux` cron job starts on the second Sunday of the month), the job waits for it
+and checks its result instead of starting another. If a resilver is running, the job waits
+for it to finish, then scrubs.
+
+Output:
+
+- journald (`journalctl -u fsbackup-scrub`): the start line, one result line for the pool,
+  a summary line, and one `ERROR` line per problem
+- `/var/lib/fsbackup/log/scrub.log`: the same lines, plus the full `zpool status -p` output
+- `fsbackup_scrub.prom`: `fsbackup_scrub_success{pool}`,
+  `fsbackup_scrub_last_success_seconds{pool}`, `fsbackup_scrub_problems{pool}` and more
+  (see [reference.md](reference.md#prometheus-metrics)). Alert on
+  `fsbackup_scrub_success == 0` or on `time() - fsbackup_scrub_last_success_seconds > 35*86400`.
+
+```bash
+cat /var/lib/node_exporter/textfile_collector/fsbackup_scrub.prom
+```
+
+### When the scrub check fails
+
+```bash
+journalctl -u fsbackup-scrub.service -n 50    # which checks failed
+sudo zpool status -v backup                   # device states, counters, damaged files (-v needs root)
+```
+
+- **Repaired bytes or `CKSUM` errors on one disk, pool still `ONLINE`**: redundancy fixed
+  the data, but that disk returned bad data. Check its SMART data and cabling
+  (`sudo smartctl -a /dev/sdX`).
+- **`DEGRADED` / `UNAVAIL` / `FAULTED`**: a disk has dropped out. Replace it with
+  `zpool replace`.
+- **Permanent data errors**: the pool couldn't repair some blocks. `sudo zpool status -v`
+  lists the affected files and snapshots, and the `see:` link in its output describes
+  recovery. Get good copies from the source host or from S3.
+
+The vdev error counters stay in `zpool status` through later scrubs until they're
+cleared, so the check keeps failing until then. (The repaired amount is replaced by the
+next scrub's.) Once the cause is dealt with, clear the counters and re-run the check:
+
+```bash
+sudo zpool clear backup
+sudo systemctl start --no-block fsbackup-scrub.service
+```
+
+> **Two scrubs a month.** Ubuntu's `zfsutils-linux` package also scrubs every pool on the
+> second Sunday of the month (`/etc/cron.d/zfsutils-linux`). The fsbackup check doesn't
+> depend on it. To keep only the fsbackup scrub, turn Ubuntu's off for this pool:
+> `sudo zfs set org.debian:periodic-scrub=disable backup`.
 
 ---
 

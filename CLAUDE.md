@@ -82,6 +82,7 @@ Scripts source this with: `. /etc/fsbackup/fsbackup.conf`
 | `fs-schedule-apply.sh` | `bin/` | manual + installer (writes systemd OnCalendar= drop-ins) |
 | `fs-schedule-set.sh` | `bin/` | manual + web UI (Configuration > Schedule): set one `CLASS*_SCHEDULE`, then apply |
 | `fs-db-export.sh` | `bin/` | systemd timer (`fs-db-export@<name>.timer`); runs as root |
+| `fs-scrub-check.sh` | `bin/` | systemd timer (`fsbackup-scrub.timer`); runs as root. `zpool scrub -w`, then fails on any `zpool status` problem |
 | `fs-restore.sh` | `utils/` | manual only |
 | `fs-trust-host.sh` | `utils/` | manual only |
 | `fs-target-rename.sh` | `utils/` | manual + web UI (Configuration > Targets > Rename) |
@@ -102,7 +103,7 @@ Parameterized by class instance (e.g. `@class1`):
 | `fsbackup-doctor@.timer` | SSH/path health check + orphan scan |
 | `fsbackup-retention.timer` | Prune old ZFS snapshots |
 | `fsbackup-s3-export.timer` | Encrypt + upload to S3 |
-| `fsbackup-scrub.timer` | ZFS scrub |
+| `fsbackup-scrub.timer` | Monthly ZFS scrub + health check (`fs-scrub-check.sh`, 5th 03:00) |
 | `fsbackup-logrotate-metric.timer` | Rotate Prometheus .prom files |
 | `fsbackup-web.service` | FastAPI web UI (no timer; persistent) |
 | `fs-db-export@.timer` | DB export; instance = env filename in /etc/fsbackup/db/ |
@@ -112,7 +113,8 @@ Parameterized by class instance (e.g. `@class1`):
 ## Logging
 
 Per-class runner logs: `/var/lib/fsbackup/log/backup-<class>.log`
-Other logs in same dir: `s3-export.log`, `fs-orphans.log`
+Other logs in same dir: `retention.log`, `s3-export.log`, `scrub.log`, `fs-orphans.log`
+`scrub.log` is written by a root script into the fsbackup-owned dir, so `fs-scrub-check.sh` writes it through a `tee` running as fsbackup (`setpriv`). Root never opens a path in that dir, and the file stays fsbackup-owned for logrotate's `copytruncate`.
 Doctor output has no log file — it goes to the journal (`journalctl -u fsbackup-doctor@<class>`); `fs-orphans.log` only records orphan events (all classes).
 
 ---
@@ -121,6 +123,7 @@ Doctor output has no log file — it goes to the journal (`journalctl -u fsbacku
 
 The `fsbackup` user runs most services. Exceptions:
 - `fs-db-export@.service`: `User=root` (needs `docker exec`)
+- `fsbackup-scrub.service`: `User=root` (`zpool scrub` has no delegation). Lock is `/run/fsbackup-scrub.lock`, not `/run/lock`, which is world-writable.
 - Orphan dataset deletion in web UI: `sudo zfs destroy -r <dataset>` — allowed via `/etc/sudoers.d/fsbackup-zfs-destroy` (NOPASSWD, scoped to `SNAPSHOT_ROOT/*/*`). Created automatically by `fs-install.sh`.
 - Runner auto-provisioning: `sudo fs-provision.sh` — `/etc/sudoers.d/fsbackup-provision`.
 - Web UI rename target: `sudo fs-target-rename.sh …` — `/etc/sudoers.d/fsbackup-target-rename`.
