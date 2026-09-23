@@ -40,7 +40,32 @@ NODEEXP_DIR="/var/lib/node_exporter/textfile_collector"
 PROM_OUT="${NODEEXP_DIR}/fsbackup_s3.prom"
 PROM_TMP="$(mktemp)"
 ZFS_ERR_TMP="$(mktemp)"
-trap 'rm -f "$PROM_TMP" "$ZFS_ERR_TMP"' EXIT
+UPLOAD_ERR_TMP="$(mktemp)"
+trap 'rm -f "$PROM_TMP" "$ZFS_ERR_TMP" "$UPLOAD_ERR_TMP"' EXIT
+
+# Max stderr lines per upload sent to journald; the rest go to the file only.
+UPLOAD_ERR_JOURNAL_MAX=10
+
+# log_upload_stderr <s3_uri>: report what the upload pipeline wrote to stderr
+# (in $UPLOAD_ERR_TMP). The first UPLOAD_ERR_JOURNAL_MAX lines go to journald
+# and the file (error), the rest to the file only, like the runner does for
+# rsync.
+log_upload_stderr() {
+  local uri="$1" line n=0
+  [[ -s "$UPLOAD_ERR_TMP" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    n=$((n + 1))
+    if [[ "$n" -le "$UPLOAD_ERR_JOURNAL_MAX" ]]; then
+      error "s3-export" "upload: ${line}"
+    else
+      log "s3-export" "upload: ${line}"
+    fi
+  done <"$UPLOAD_ERR_TMP"
+  if [[ "$n" -gt "$UPLOAD_ERR_JOURNAL_MAX" ]]; then
+    error "s3-export" "upload: $(( n - UPLOAD_ERR_JOURNAL_MAX )) more stderr line(s) for ${uri} in ${LOG_FILE}"
+  fi
+  : >"$UPLOAD_ERR_TMP"
+}
 
 # -----------------------------------------------------------------------------
 # Preflight checks
@@ -125,12 +150,21 @@ while IFS= read -r snapfull; do
 
   log "s3-export" "UPLOAD ${s3_uri}"
 
-  if tar -C "$snap_data" -cf - . \
+  # stderr of the whole pipeline (tar, zstd, age, aws) is collected and logged
+  # after it, so the reason for a failure (AccessDenied, a tar read error, ...)
+  # is in s3-export.log as well as the journal.
+  upload_ok=0
+  if { tar -C "$snap_data" -cf - . \
       | zstd -6 -T0 \
       | age -e -R "$AGE_PUBKEY_FILE" \
       | aws s3 cp - "$s3_uri" \
           --no-progress \
-          --profile "$AWS_PROFILE"; then
+          --profile "$AWS_PROFILE"; } 2>"$UPLOAD_ERR_TMP"; then
+    upload_ok=1
+  fi
+  log_upload_stderr "$s3_uri"
+
+  if [[ "$upload_ok" -eq 1 ]]; then
 
     UPLOADED=$((UPLOADED + 1))
 
