@@ -215,6 +215,20 @@ else
     warn "sudoers syntax check failed — removing ${SUDOERS_SCHEDULE_FILE}"
     rm -f "$SUDOERS_SCHEDULE_FILE"
 fi
+
+# sudoers drop-in: allow fsbackup to run fs-target-rename.sh as root for the
+# web UI's Rename target action (zfs rename / destroy -r need root; the script
+# validates its own arguments and stays within SNAPSHOT_ROOT/<class>/<id>).
+SUDOERS_RENAME_FILE="/etc/sudoers.d/fsbackup-target-rename"
+SUDOERS_RENAME_LINE="${FSBACKUP_USER} ALL=(root) NOPASSWD: ${INSTALL_DIR}/utils/fs-target-rename.sh"
+echo "$SUDOERS_RENAME_LINE" > "$SUDOERS_RENAME_FILE"
+chmod 0440 "$SUDOERS_RENAME_FILE"
+if visudo -c -f "$SUDOERS_RENAME_FILE" &>/dev/null; then
+    ok "sudoers drop-in written: ${SUDOERS_RENAME_FILE}"
+else
+    warn "sudoers syntax check failed — removing ${SUDOERS_RENAME_FILE}"
+    rm -f "$SUDOERS_RENAME_FILE"
+fi
 echo
 
 # ---------------------------------------------------------------------------

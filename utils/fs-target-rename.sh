@@ -13,6 +13,11 @@ set -euo pipefail
 #     --to new.target.id \
 #     --move | --delete \
 #     [--dry-run]
+#
+# Also run by the web UI (Configuration → Targets → Rename) via a sudoers
+# drop-in scoped to this script, so it validates its own arguments: class and
+# ids must be plain dataset name components — no '/', '@', or leading '.' —
+# which keeps every rename/destroy inside SNAPSHOT_ROOT/<class>/<id>.
 # =============================================================================
 
 . /etc/fsbackup/fsbackup.conf
@@ -49,6 +54,15 @@ if [[ "$MODE" == "move" && -z "$TO_ID" ]]; then
   exit 2
 fi
 
+valid_component() { [[ "$1" =~ ^[A-Za-z0-9._-]+$ && "$1" != .* ]]; }
+
+valid_component "$CLASS"   || { echo "ERROR: invalid class: $CLASS"; exit 2; }
+valid_component "$FROM_ID" || { echo "ERROR: invalid target id: $FROM_ID"; exit 2; }
+if [[ "$MODE" == "move" ]]; then
+  valid_component "$TO_ID" || { echo "ERROR: invalid target id: $TO_ID"; exit 2; }
+  [[ "$TO_ID" != "$FROM_ID" ]] || { echo "ERROR: --to is the same as --from"; exit 2; }
+fi
+
 log() {
   echo "$(date +%Y-%m-%dT%H:%M:%S%z) [fs-target-rename] $*"
 }
@@ -67,6 +81,10 @@ SNAP_COUNT=$(zfs list -t snapshot -r -H -o name "$FROM_DATASET" 2>/dev/null | wc
 case "$MODE" in
   move)
     TO_DATASET="${ZFS_BASE}/${CLASS}/${TO_ID}"
+    if zfs list -H -o name "$TO_DATASET" &>/dev/null; then
+      log "ERROR: destination already exists: ${TO_DATASET}"
+      exit 1
+    fi
     log "RENAME ${FROM_DATASET} → ${TO_DATASET}  (${SNAP_COUNT} snapshots)"
     if [[ "$DRY_RUN" -eq 0 ]]; then
       zfs rename "$FROM_DATASET" "$TO_DATASET"

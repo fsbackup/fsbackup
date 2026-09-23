@@ -1433,21 +1433,23 @@ async def api_rename_target(
     request: Request,
     cls:      str = Form(...),
     from_id:  str = Form(...),
-    to_id:    str = Form(...),
+    to_id:    str = Form(default=""),
     mode:     str = Form(...),       # "move" or "delete"
     dry_run:  str = Form(default=""), # "1" if checked
 ):
-    """Run fs-target-rename.sh with the given parameters."""
-    key = "rename-target"
+    """Run fs-target-rename.sh (via sudo) and return its output.
+
+    Runs synchronously — zfs rename/destroy return quickly — so the result
+    (including a dry-run preview or a failure) is shown in the modal."""
     result_msg = ""
     result_ok  = False
+    output     = ""
 
     from_id = from_id.strip()
     to_id   = to_id.strip()
+    is_dry  = dry_run == "1"
 
-    if _jobs.get(key, {}).get("status") == "running":
-        result_msg = "A rename is already running"
-    elif mode not in ("move", "delete"):
+    if mode not in ("move", "delete"):
         result_msg = "Invalid mode — must be move or delete"
     elif cls not in CLASSES:
         result_msg = "Invalid class"
@@ -1455,35 +1457,33 @@ async def api_rename_target(
         result_msg = "Invalid 'from' target ID"
     elif mode == "move" and not _valid_target_id(to_id):
         result_msg = "Invalid 'to' target ID"
+    elif mode == "move" and to_id == from_id:
+        result_msg = "New ID is the same as the current ID"
     else:
         script = SCRIPTS_DIR / "utils" / "fs-target-rename.sh"
-        cmd = ["sudo", str(script),
-               "--class", cls,
-               "--from",  from_id,
-               "--to",    to_id,
-               f"--{mode}"]
-        if dry_run == "1":
+        cmd = ["sudo", "-n", str(script), "--class", cls, "--from", from_id, f"--{mode}"]
+        if mode == "move":
+            cmd += ["--to", to_id]
+        if is_dry:
             cmd.append("--dry-run")
         try:
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-            )
-            with _jobs_lock:
-                _jobs[key] = {
-                    "status":     "running",
-                    "rc":         None,
-                    "started_at": datetime.now(),
-                    "ended_at":   None,
-                    "lines":      deque(maxlen=200),
-                }
-            threading.Thread(target=_stream_job, args=(key, proc), daemon=True).start()
-            result_ok  = True
-            mode_label = "move" if mode == "move" else "wipe history"
-            result_msg = f"Started: {from_id} → {to_id} ({mode_label}{'  dry-run' if dry_run == '1' else ''})"
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            output = (r.stdout + r.stderr).strip()
+            if r.returncode == 0:
+                result_ok = True
+                if is_dry:
+                    result_msg = "Dry run — no changes made. Uncheck \"Dry run\" to apply."
+                elif mode == "move":
+                    result_msg = (f"Moved {from_id} → {to_id}. Now change the id in targets.yml to "
+                                  f"{to_id}, or the next run will re-create an empty {from_id}.")
+                else:
+                    result_msg = f"Wiped history for {from_id}. The next run starts it fresh."
+            elif "password is required" in output:
+                result_msg = "sudo not permitted — add the fsbackup-target-rename sudoers drop-in (see fs-install.sh)"
+            else:
+                result_msg = f"fs-target-rename.sh failed (exit {r.returncode})"
+        except subprocess.TimeoutExpired:
+            result_msg = "fs-target-rename.sh timed out after 300s"
         except Exception as e:
             result_msg = str(e)
 
@@ -1491,7 +1491,7 @@ async def api_rename_target(
         "request":    request,
         "result_ok":  result_ok,
         "result_msg": result_msg,
-        "unit":       key,
+        "output":     output,
     })
 
 
