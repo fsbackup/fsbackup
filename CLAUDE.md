@@ -131,7 +131,7 @@ Rotation: `/etc/logrotate.d/fsbackup` — daily, 30 kept, `copytruncate`, `datee
 Units set `SyslogIdentifier=fsbackup-<job>` (templated: `fsbackup-runner-<class>`, `fsbackup-doctor-<class>`).
 The fsbackup-user job units have `LogsDirectory=fsbackup` + `LogsDirectoryMode=0750`; never add that to a `User=root` unit (systemd would chown the dir to root).
 Root-run scripts (e.g. `fs-scrub-check.sh`): when `EUID` is 0, `lib/log.sh` does every file write (and its `mkdir`) as fsbackup via `setpriv`,
-because fsbackup owns `LOG_DIR` and could plant a symlink (`scrub.log -> /etc/shadow`) that a root `>>` or `chown` would follow.
+because fsbackup owns `LOG_DIR` and could plant a symlink (`scrub.log -> /etc/shadow`) that a root `>>` or `chown` would follow, or a FIFO that a normal open would block on (hence `dd oflag=nonblock` in root mode, and a regular-file check otherwise).
 So root code must never open, create or `chown` anything in `LOG_DIR` itself; just use the helpers. New files stay fsbackup-owned, so logrotate can rotate them.
 The web log viewer (`/api/journal/<unit>`) reads the current file + newest uncompressed rotated file, and falls back to `journalctl -u` when a unit has no file yet.
 

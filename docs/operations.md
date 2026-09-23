@@ -246,7 +246,8 @@ Output:
 - `/var/log/fsbackup/scrub.log` (`$LOG_DIR/scrub.log`): the same lines, plus the full
   `zpool status -p` output. The job runs as root, but `lib/log.sh` writes this file as
   `fsbackup` (through `setpriv`), so it stays fsbackup-owned and root never follows a
-  symlink planted in the log directory. If the log directory is missing (`fsbackup` can't
+  symlink planted in the log directory. The writes never block, so a FIFO planted as
+  `scrub.log` can't hang the check either. If the log directory is missing (`fsbackup` can't
   create it under `/var/log`), the journal gets one `[log] WARN cannot write …` line and
   the check still runs.
 - `fsbackup_scrub.prom`: `fsbackup_scrub_success{pool}`,
