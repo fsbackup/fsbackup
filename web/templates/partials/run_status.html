@@ -23,3 +23,7 @@
 {{ tail_div("tail-runner-" ~ cls, tails.get("runner-" ~ cls, [])) }}
 {{ tail_div("tail-doctor-" ~ cls, tails.get("doctor-" ~ cls, [])) }}
 {% endfor %}
+{% for key, val in system.items() %}
+<span id="status-{{ key }}" hx-swap-oob="true">{{ badge_inner(val) }}</span>
+{{ tail_div("tail-" ~ key, tails.get(key, [])) }}
+{% endfor %}
