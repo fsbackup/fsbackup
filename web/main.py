@@ -656,6 +656,7 @@ async def restore_page(request: Request, snapshot_path: str = "", dest: str = ""
     return templates.TemplateResponse("restore.html", {
         "request":       request,
         "snapshots":     snapshots,
+        "remote_hosts":  _restore_remote_hosts(),
         "snapshot_path": snapshot_path,
         "dest":          dest,
         "tiers":         TIERS,
@@ -663,28 +664,68 @@ async def restore_page(request: Request, snapshot_path: str = "", dest: str = ""
     })
 
 
+# Remote account on source hosts (same as fs-runner.sh / fs-restore.sh)
+BACKUP_SSH_USER = "backup"
+
+# Remote restore destination: absolute path, conservative charset, no '..'.
+_REMOTE_PATH_RE = re.compile(r"^/[A-Za-z0-9._/+@=-]*$")
+_RESTORE_SSH = "ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=10"
+
+
+def _restore_remote_hosts() -> list[str]:
+    """Remote hosts a snapshot can be pushed to: hosts from targets.yml whose SSH
+    host key is trusted (the push runs as backup@<host>, like the runner's pull)."""
+    hosts: list[str] = []
+    for class_targets in load_targets().values():
+        for t in class_targets:
+            h = t.get("host", "")
+            if h and h not in hosts:
+                hosts.append(h)
+    return [h for h in hosts
+            if not _is_local_host(h) and _host_key_status(h)["trusted"]]
+
+
 @app.post("/api/run/restore", response_class=HTMLResponse)
 async def api_restore(
     request: Request,
     snapshot_path: str = Form(default=""),
-    dest: str = Form(default=""),
-    dry_run: str = Form(default=""),
+    target:        str = Form(default="local"),   # "local" or "remote"
+    dest:          str = Form(default=""),
+    to_host:       str = Form(default=""),
+    to_path:       str = Form(default=""),
+    dry_run:       str = Form(default=""),
 ):
     """
-    Run rsync to restore a snapshot directory to a destination path.
-    snapshot_path: full path to snapshot directory (within SNAPSHOT_ROOT or MIRROR_ROOT)
-    dest: local destination path
+    Run rsync to restore a snapshot directory (or a subdirectory of one).
+    snapshot_path: path inside SNAPSHOT_ROOT (e.g. .../.zfs/snapshot/daily-2026-03-23[/sub/dir])
+    target=local:  dest is a path on this server
+    target=remote: pushed to backup@to_host:to_path (a trusted host from targets.yml);
+                   only writes where the remote backup user can, e.g. /var/tmp/...
     dry_run: "1" if dry run (preview only)
     """
     is_dry = dry_run == "1"
+    remote = target == "remote"
+    to_host, to_path = to_host.strip(), to_path.strip()
     error = ""
     output = ""
+    destination = ""
 
     if not snapshot_path:
         error = "Snapshot path is required."
+    elif remote:
+        if to_host not in _restore_remote_hosts():
+            error = "Remote host must be a host from targets.yml with a trusted SSH key (Configuration → Hosts)."
+        elif (not _REMOTE_PATH_RE.match(to_path) or to_path == "/"
+              or ".." in to_path.split("/")):
+            error = "Remote path must be absolute, use only letters, digits and . _ / + @ = -, and contain no '..'."
+        else:
+            destination = f"{BACKUP_SSH_USER}@{to_host}:{to_path.rstrip('/')}/"
     elif not dest:
         error = "Destination path is required."
     else:
+        destination = dest + "/"
+
+    if not error:
         snap = Path(snapshot_path)
         # Safety: must be within SNAPSHOT_ROOT
         try:
@@ -699,23 +740,28 @@ async def api_restore(
     if not error:
         cmd = ["rsync", "-a", "--stats"]
         if is_dry:
-            cmd.append("--dry-run")
-        cmd += [str(resolved) + "/", dest + "/"]
+            cmd += ["--dry-run", "--itemize-changes"]
+        if remote:
+            # --mkpath creates the remote directory without a remote shell command
+            cmd += ["--mkpath", "-e", _RESTORE_SSH]
+        cmd += [str(resolved) + "/", destination]
         try:
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
             output = r.stdout + r.stderr
-            if r.returncode != 0 and not output.strip():
-                output = f"rsync exited with code {r.returncode}"
+            if r.returncode != 0:
+                error = (output.strip() + "\n\n" if output.strip() else "") + f"rsync exited with code {r.returncode}"
+                output = ""
         except subprocess.TimeoutExpired:
-            error = "rsync timed out (>120s). For large restores use the command line."
+            error = "rsync timed out (>120s). For large restores use the command line (utils/fs-restore.sh)."
         except Exception as e:
             error = str(e)
 
     return templates.TemplateResponse("partials/restore_result.html", {
-        "request":  request,
-        "error":    error,
-        "output":   output,
-        "is_dry":   is_dry,
+        "request":     request,
+        "error":       error,
+        "output":      output,
+        "is_dry":      is_dry,
+        "destination": destination.rstrip("/"),
     })
 
 

@@ -23,11 +23,39 @@
         <p class="text-xs text-zinc-400 mt-1">Full path to the snapshot directory</p>
       </div>
       <div>
+        <p class="block text-xs text-zinc-500 mb-1">Restore to</p>
+        <div class="flex gap-6">
+          <label class="flex items-center gap-2 text-sm text-zinc-700 dark:text-zinc-300 cursor-pointer">
+            <input type="radio" name="target" value="local" checked onchange="restoreTarget(this.value)" class="accent-brand-600"> This server
+          </label>
+          <label class="flex items-center gap-2 text-sm text-zinc-700 dark:text-zinc-300 {% if remote_hosts %}cursor-pointer{% else %}opacity-50{% endif %}">
+            <input type="radio" name="target" value="remote" onchange="restoreTarget(this.value)" class="accent-brand-600" {% if not remote_hosts %}disabled{% endif %}> Remote host
+          </label>
+        </div>
+      </div>
+      <div id="restore-local">
         <label class="block text-xs text-zinc-500 mb-1">Destination path</label>
         <input type="text" name="dest" value="{{ dest }}"
                placeholder="/restore/target"
                class="w-full bg-zinc-50 dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 text-zinc-900 dark:text-zinc-100 text-sm font-mono rounded-lg px-3 py-2 focus:outline-none focus:border-brand-500"/>
         <p class="text-xs text-zinc-400 mt-1">Local path to restore into</p>
+      </div>
+      <div id="restore-remote" class="hidden space-y-3">
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div>
+            <label class="block text-xs text-zinc-500 mb-1">Host</label>
+            <select name="to_host"
+                    class="w-full bg-zinc-50 dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 text-zinc-900 dark:text-zinc-100 text-sm font-mono rounded-lg px-2 py-2 focus:outline-none focus:border-brand-500">
+              {% for h in remote_hosts %}<option value="{{ h }}">{{ h }}</option>{% endfor %}
+            </select>
+          </div>
+          <div class="sm:col-span-2">
+            <label class="block text-xs text-zinc-500 mb-1">Remote path</label>
+            <input type="text" name="to_path" placeholder="/var/tmp/fsbackup-restore/&lt;target&gt;"
+                   class="w-full bg-zinc-50 dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 text-zinc-900 dark:text-zinc-100 text-sm font-mono rounded-lg px-3 py-2 focus:outline-none focus:border-brand-500"/>
+          </div>
+        </div>
+        <p class="text-xs text-zinc-400">Pushed over SSH as <code class="font-mono">backup@host</code> — it can only write where that user can (e.g. <code class="font-mono">/var/tmp/…</code>), and files are owned by <code class="font-mono">backup</code>. Restore to a staging directory, then move files into place on the host. Only hosts from targets.yml with a trusted key are listed.</p>
       </div>
       <div class="flex items-center gap-2 pt-1">
         <input type="checkbox" id="dry_run" name="dry_run" value="1" checked
@@ -73,11 +101,18 @@
 <!-- Instructions -->
 <div class="mt-6 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl p-5 shadow-sm">
   <h2 class="text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">Manual restore</h2>
-  <p class="text-xs text-zinc-400 mb-3">To restore from the command line:</p>
+  <p class="text-xs text-zinc-400 mb-3">To restore from the command line (add <code class="font-mono">--dry-run</code> to preview):</p>
   <pre class="text-xs text-zinc-700 dark:text-zinc-300 font-mono bg-zinc-50 dark:bg-zinc-950 rounded-lg p-4 overflow-x-auto">/opt/fsbackup/utils/fs-restore.sh restore --class &lt;class&gt; --id &lt;target&gt; --latest --to /restore/path
-/opt/fsbackup/utils/fs-restore.sh restore --class &lt;class&gt; --id &lt;target&gt; --snapshot weekly-2026-W12 --to /restore/path</pre>
+/opt/fsbackup/utils/fs-restore.sh restore --class &lt;class&gt; --id &lt;target&gt; --snapshot weekly-2026-W12 --to /restore/path
+sudo -u fsbackup /opt/fsbackup/utils/fs-restore.sh restore --class &lt;class&gt; --id &lt;target&gt; --latest --to-host &lt;host&gt; --to-path /var/tmp/fsbackup-restore/&lt;target&gt;</pre>
   <p class="text-xs text-zinc-400 mt-4">For S3 archives:</p>
   <pre class="text-xs text-zinc-700 dark:text-zinc-300 font-mono bg-zinc-50 dark:bg-zinc-950 rounded-lg p-4 mt-1 overflow-x-auto">aws s3 cp s3://fsbackup-snapshots-SUFFIX/&lt;tier&gt;/&lt;class&gt;/&lt;target&gt;/&lt;archive&gt;.tar.zst.age . \
   &amp;&amp; age -d -i /etc/fsbackup/age.key &lt;archive&gt;.tar.zst.age | zstd -d | tar -xf - -C /restore/path/</pre>
 </div>
+<script>
+function restoreTarget(v) {
+  document.getElementById('restore-local').classList.toggle('hidden', v !== 'local');
+  document.getElementById('restore-remote').classList.toggle('hidden', v !== 'remote');
+}
+</script>
 {% endblock %}
