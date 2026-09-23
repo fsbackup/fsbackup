@@ -189,6 +189,32 @@
 </div>
 
 <script>
+// Output tails (#tail-*) are re-sent by the 3s status poller. Skip the swap when
+// the text is unchanged, and otherwise keep the reader's scroll position —
+// following new lines only if they were already at the bottom.
+function _tailPre(id) { const el = document.getElementById(id); return el && el.querySelector('pre'); }
+function _tailToBottom(pre) { pre.scrollTop = pre.scrollHeight; }
+
+document.body.addEventListener('htmx:oobBeforeSwap', function(evt) {
+  const target = evt.detail.target;
+  if (!target.id || !target.id.startsWith('tail-')) return;
+  if (target.textContent === evt.detail.fragment.textContent) {
+    evt.detail.shouldSwap = false;
+    return;
+  }
+  const pre = target.querySelector('pre');
+  const atBottom = !pre || pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 5;
+  const saved = pre ? pre.scrollTop : 0;
+  const id = target.id;
+  requestAnimationFrame(function() {
+    const newPre = _tailPre(id);
+    if (!newPre) return;
+    if (atBottom) _tailToBottom(newPre); else newPre.scrollTop = saved;
+  });
+});
+
+document.querySelectorAll('[id^="tail-"] pre').forEach(_tailToBottom);
+
 let _journalUnit = null;
 let _journalTimer = null;
 let _journalAtBottom = true;
