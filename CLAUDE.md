@@ -114,7 +114,7 @@ Parameterized by class instance (e.g. `@class1`):
 
 Per-class runner logs: `/var/lib/fsbackup/log/backup-<class>.log`
 Other logs in same dir: `retention.log`, `s3-export.log`, `scrub.log`, `fs-orphans.log`
-`scrub.log` is written by a root script into the fsbackup-owned dir, so `fs-scrub-check.sh` writes it through a `tee` running as fsbackup (`setpriv`). Root never opens a path in that dir, and the file stays fsbackup-owned for logrotate's `copytruncate`.
+`scrub.log` is written by a root script into the fsbackup-owned dir, so `fs-scrub-check.sh` writes it through a writer (`mkdir -p` + `tee`) running as fsbackup (`setpriv`). Root never opens or creates a path in that dir (it doesn't call `log_init`), and the file stays fsbackup-owned for logrotate's `copytruncate`. Its `LOG_DIR` default follows `lib/log.sh`: `/var/log/fsbackup` if `/opt/fsbackup/lib/log.sh` (#113) is installed, else `/var/lib/fsbackup/log`.
 Doctor output has no log file — it goes to the journal (`journalctl -u fsbackup-doctor@<class>`); `fs-orphans.log` only records orphan events (all classes).
 
 ---

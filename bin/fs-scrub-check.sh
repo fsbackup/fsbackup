@@ -255,38 +255,60 @@ fi
 export LC_ALL=C   # scrub_parse_status matches zpool's English wording
 
 . /etc/fsbackup/fsbackup.conf
-LOG_DIR="${LOG_DIR:-/var/lib/fsbackup/log}"
 
 # --- logging -----------------------------------------------------------------
-# Local stand-in for lib/log.sh (#113), same contract:
+# Same contract as lib/log.sh (#113):
 #   log   <tag> <msg...>   file only
 #   event <tag> <msg...>   file + stdout (journald)
 #   error <tag> <msg...>   file + stderr (journald), prefixed "ERROR "
-# When lib/log.sh lands, replace this block with
-#   . "$(dirname "$(readlink -f "$0")")/../lib/log.sh"
-#   log_init scrub
-# and change the LOG_DIR default above to /var/log/fsbackup.
+# If lib/log.sh is installed next to bin/ (#113 and later), use it and its
+# /var/log/fsbackup default. Otherwise use a local copy with the pre-#113
+# default, /var/lib/fsbackup/log. Keying the default on the library means the
+# script follows #113's log move whether it is deployed before or after #113,
+# and a merge of the two branches needs no edit here.
+# log_init is deliberately not called: it would create LOG_DIR and open
+# scrub.log as root. The fsbackup writer below does both instead.
+LOG_LIB="$(dirname "$(readlink -f "$0")")/../lib/log.sh"
+if [[ -r "$LOG_LIB" ]]; then
+  LOG_DIR="${LOG_DIR:-/var/log/fsbackup}"
+  . "$LOG_LIB"
+else
+  LOG_DIR="${LOG_DIR:-/var/lib/fsbackup/log}"
+  log()   { local tag="$1"; shift; echo "$(date -Is) [$tag] $*" >>"$LOG_FILE"; }
+  event() { local tag="$1"; shift; echo "$(date -Is) [$tag] $*" | tee -a "$LOG_FILE"; }
+  error() { local tag="$1"; shift; echo "$(date -Is) [$tag] ERROR $*" | tee -a "$LOG_FILE" >&2; }
+fi
 LOG_FILE="$LOG_DIR/scrub.log"
-mkdir -p "$LOG_DIR" 2>/dev/null || true
-log()   { local tag="$1"; shift; echo "$(date -Is) [$tag] $*" >>"$LOG_FILE"; }
-event() { local tag="$1"; shift; echo "$(date -Is) [$tag] $*" | tee -a "$LOG_FILE"; }
-error() { local tag="$1"; shift; echo "$(date -Is) [$tag] ERROR $*" | tee -a "$LOG_FILE" >&2; }
 # --- end logging -------------------------------------------------------------
 
-# Keep this after the logging block, including once lib/log.sh is in use.
-# This script runs as root, but $LOG_DIR belongs to fsbackup. If root opened a
-# path in there, it would follow any symlink fsbackup had planted, so fsbackup
-# could make root create or append to any file. A root-owned scrub.log would
-# also break rotation: logrotate runs as fsbackup and copytruncate has to
-# truncate the file. So one tee, running as fsbackup, does all the file writes,
-# and LOG_FILE points at the pipe to it. It starts before the lock is taken so
-# it doesn't inherit the lock fd.
+# This script runs as root, but $LOG_DIR belongs to fsbackup. If root opened or
+# created a path in there, it would follow any symlink fsbackup had planted, so
+# fsbackup could make root create or append to any file. A root-owned
+# scrub.log, or a LOG_DIR recreated by root after #113's migration removed the
+# old one, would also lock fsbackup out: logrotate runs as fsbackup and
+# copytruncate has to truncate the file. So one writer process, running as
+# fsbackup, creates LOG_DIR if fsbackup is allowed to (it can't under
+# /var/log, where the installer creates it) and appends everything to
+# scrub.log; LOG_FILE points at the pipe to it. If the file can't be opened,
+# the writer prints one warning to journald and drops the file lines; event
+# and error lines still reach journald directly. It starts before the lock is
+# taken so it doesn't inherit the lock fd.
+# (sh is dash: `true`, not `:`, because a failed redirection on a special
+# builtin like `:` makes dash exit instead of returning non-zero.)
+LOG_WRITER_SH='mkdir -p -- "$1" 2>/dev/null
+if { true >>"$2"; } 2>/dev/null; then exec tee -a -- "$2" >/dev/null; fi
+echo "$(date -Is) [log] WARN cannot write $2 as fsbackup; detail lines from this run are not being saved (LOG_DIR must exist and be owned by fsbackup)" >&2
+exec cat >/dev/null'
 LOG_WRITER_PID=""
 if id -u fsbackup >/dev/null 2>&1 && command -v setpriv >/dev/null 2>&1; then
   exec 3> >(exec setpriv --reuid=fsbackup --regid=fsbackup --clear-groups -- \
-              tee -a "$LOG_FILE" >/dev/null)
+              sh -c "$LOG_WRITER_SH" fs-scrub-log "$LOG_DIR" "$LOG_FILE")
   LOG_WRITER_PID=$!
   LOG_FILE=/dev/fd/3
+else
+  # No fsbackup user to write as (not a normal fsbackup install): root writes
+  # the file itself.
+  mkdir -p "$LOG_DIR" 2>/dev/null || true
 fi
 # If the writer dies, writes to it should fail quietly, not kill the run with SIGPIPE.
 trap '' PIPE

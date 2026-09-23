@@ -203,7 +203,10 @@ Output:
 
 - journald (`journalctl -u fsbackup-scrub`): the start line, one result line for the pool,
   a summary line, and one `ERROR` line per problem
-- `/var/lib/fsbackup/log/scrub.log`: the same lines, plus the full `zpool status -p` output
+- `/var/lib/fsbackup/log/scrub.log` (`$LOG_DIR/scrub.log`): the same lines, plus the full
+  `zpool status -p` output. The job runs as root but writes this file as `fsbackup`, so it
+  stays fsbackup-owned. If the log directory is missing and `fsbackup` can't create it,
+  the journal gets one `[log] WARN cannot write …` line and the check still runs.
 - `fsbackup_scrub.prom`: `fsbackup_scrub_success{pool}`,
   `fsbackup_scrub_last_success_seconds{pool}`, `fsbackup_scrub_problems{pool}` and more
   (see [reference.md](reference.md#prometheus-metrics)). Alert on
