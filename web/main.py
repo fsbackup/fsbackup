@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """fsbackup web UI — FastAPI + HTMX + Tailwind"""
 
+import gzip
+import io
 import os
 import re
 import secrets
@@ -9,7 +11,9 @@ import subprocess
 import threading
 import time
 import yaml
+import zlib
 from collections import deque
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -21,7 +25,7 @@ import boto3
 from botocore.config import Config as BotoConfig
 from botocore.exceptions import BotoCoreError, ClientError
 
-from fastapi import FastAPI, Request, Form
+from fastapi import FastAPI, Request, Form, Query
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -1071,12 +1075,46 @@ def _parse_prom_files() -> list[dict]:
 
 
 @app.get("/logs", response_class=HTMLResponse)
-async def logs_page(request: Request):
-    metrics = _parse_prom_files()
+async def logs_page(
+    request: Request,
+    tab: str = "live",
+    source: str = "",
+    day: str = Query("", alias="date"),
+):
+    """Logs page. tab=live (default): live-tail panels + metrics. tab=history:
+    rotated log files by date (#115); source/date preselect a file (deep link).
+    Invalid source/date values are ignored here — the API endpoints reject them."""
+    if tab != "history":
+        return _template_response("logs.html", {
+            "request":      request,
+            "tab":          "live",
+            "log_sections": _LOG_SECTIONS,
+            "metrics":      _parse_prom_files(),
+        })
+
+    found, dir_error = _history_scan()
+    if source not in _HISTORY_SOURCES:
+        source = ""
+    if not source or not _valid_history_day(day):
+        day = ""
+    groups = [
+        {
+            "name":    group,
+            "sources": [
+                {"key": key, "short": meta["short"], "count": len(found.get(key, []))}
+                for key, meta in _HISTORY_SOURCES.items() if meta["group"] == group
+            ],
+        }
+        for group in _HISTORY_GROUP_ORDER
+    ]
     return _template_response("logs.html", {
-        "request":      request,
-        "log_sections": _LOG_SECTIONS,
-        "metrics":      metrics,
+        "request":        request,
+        "tab":            "history",
+        "history_groups": groups,
+        "history_source": source,
+        "history_day":    day,
+        "history_error":  dir_error,
+        "log_dir":        str(_LOG_DIR),
     })
 
 
@@ -1638,6 +1676,328 @@ async def api_journal(request: Request, unit: str, n: int = 200):
         "lines":   lines,
         "error":   error,
     })
+
+
+# ---------------------------------------------------------------------------
+# Logs > History tab (#115): browse rotated log files in _LOG_DIR by date
+# ---------------------------------------------------------------------------
+#
+# logrotate (conf/logrotate.fsbackup) rotates every *.log daily with dateext and
+# delaycompress, keeping 30: <base>.log (current), <base>.log-YYYYMMDD (newest
+# rotated copy, plain) and older <base>.log-YYYYMMDD.gz. A file is dated the day
+# it was rotated (just after midnight), so it mostly holds the previous day's
+# runs; the file list also shows each file's first timestamp for that reason.
+#
+# Path safety: a request only ever carries a source key (allow-listed in
+# _HISTORY_SOURCES) and a day (YYYYMMDD or "current"). Filenames come from
+# scanning _LOG_DIR and matching _HISTORY_FILE_RE; nothing from the request is
+# joined into a path. Files are opened with O_NOFOLLOW, and .gz files are
+# decompressed in memory while streaming (gzip), never extracted to disk.
+
+_HISTORY_GROUP_ORDER = ("Backup", "Doctor", "Maintenance")
+
+
+def _build_history_sources() -> dict[str, dict[str, str]]:
+    """source key (= log basename in _LOG_DIR, per #113) -> group + labels."""
+    sources: dict[str, dict[str, str]] = {}
+    for cls in CLASSES:
+        sources[f"backup-{cls}"] = {"group": "Backup", "short": cls, "label": f"Backup — {cls}"}
+    for cls in CLASSES:
+        sources[f"doctor-{cls}"] = {"group": "Doctor", "short": cls, "label": f"Doctor — {cls}"}
+    sources["fs-orphans"] = {"group": "Doctor",      "short": "Orphans",   "label": "Orphans"}
+    sources["retention"]  = {"group": "Maintenance", "short": "Retention", "label": "Retention"}
+    sources["s3-export"]  = {"group": "Maintenance", "short": "S3 export", "label": "S3 export"}
+    sources["scrub"]      = {"group": "Maintenance", "short": "ZFS scrub", "label": "ZFS scrub"}
+    return sources
+
+
+_HISTORY_SOURCES = _build_history_sources()
+
+# <base>.log | <base>.log-YYYYMMDD | <base>.log-YYYYMMDD.gz (used with fullmatch)
+_HISTORY_FILE_RE = re.compile(r"(?P<base>[A-Za-z0-9_-]+)\.log(?:-(?P<day>[0-9]{8})(?P<gz>\.gz)?)?")
+# Leading "date -Is" timestamp of a log line (also matches the old s3-export format)
+_HISTORY_TS_RE = re.compile(r"([0-9]{4})-([0-9]{2})-([0-9]{2})[T ]([0-9]{2}:[0-9]{2})")
+_HISTORY_TAIL_LINES = 5000       # lines rendered by default: the end of the file
+_HISTORY_MAX_LINES  = 100_000    # hard cap for "show all"; bigger files: download
+_HISTORY_OPEN_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+
+
+def _valid_history_day(day: str) -> bool:
+    """'current', or a real calendar date as YYYYMMDD. fullmatch on [0-9] so
+    neither non-ASCII digits nor a trailing newline (which ^...$ allows) pass."""
+    if day == "current":
+        return True
+    if not re.fullmatch(r"[0-9]{8}", day or ""):
+        return False
+    try:
+        datetime.strptime(day, "%Y%m%d")
+    except ValueError:
+        return False
+    return True
+
+
+def _history_size(n: int) -> str:
+    if n < 1024:
+        return f"{n} B"
+    size = float(n)
+    for unit in ("KB", "MB", "GB"):
+        size /= 1024
+        if size < 1024 or unit == "GB":
+            break
+    return f"{size:.1f} {unit}"
+
+
+def _history_scan() -> tuple[dict[str, list[dict]], str]:
+    """One pass over _LOG_DIR. Returns ({source: [file, ...]}, dir_error): each
+    source's files newest first ("current", then by date descending), and
+    dir_error "" | "missing" (no LOG_DIR yet) | "unreadable". Only regular
+    files are listed (never symlinks); other names in the dir are ignored."""
+    by_source: dict[str, dict[str, dict]] = {key: {} for key in _HISTORY_SOURCES}
+    dir_error = ""
+    try:
+        with os.scandir(_LOG_DIR) as it:
+            for entry in it:
+                m = _HISTORY_FILE_RE.fullmatch(entry.name)
+                if not m or m["base"] not in by_source:
+                    continue
+                day = m["day"] or "current"
+                if not _valid_history_day(day):
+                    continue
+                try:
+                    if not entry.is_file(follow_symlinks=False):
+                        continue
+                    st = entry.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                files = by_source[m["base"]]
+                prev = files.get(day)
+                # <name>-D and <name>-D.gz only coexist while logrotate is still
+                # writing the .gz: the plain file is the complete one.
+                if prev is not None and not prev["compressed"]:
+                    continue
+                files[day] = {
+                    "day":        day,
+                    "name":       entry.name,
+                    "compressed": bool(m["gz"]),
+                    "size":       st.st_size,
+                    "size_h":     _history_size(st.st_size),
+                    "mtime":      datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M"),
+                    "date_label": "current" if day == "current" else f"{day[:4]}-{day[4:6]}-{day[6:]}",
+                    "weekday":    "" if day == "current" else datetime.strptime(day, "%Y%m%d").strftime("%a"),
+                }
+    except FileNotFoundError:
+        dir_error = "missing"
+    except OSError:
+        dir_error = "unreadable"
+    return {
+        key: sorted(files.values(),
+                    key=lambda f: "99999999" if f["day"] == "current" else f["day"],
+                    reverse=True)
+        for key, files in by_source.items()
+    }, dir_error
+
+
+def _history_path(name: str) -> Path | None:
+    """Path of a scanned log file, re-checked: a known log filename whose resolved
+    path sits directly in _LOG_DIR (a symlink pointing elsewhere is refused)."""
+    if not _HISTORY_FILE_RE.fullmatch(name):
+        return None
+    base = _LOG_DIR.resolve()
+    path = base / name
+    if path.resolve().parent != base:
+        return None
+    return path
+
+
+@contextmanager
+def _history_open(path: Path, compressed: bool):
+    """Text reader over a log file (UTF-8, bad bytes replaced; lines split on \\n
+    only). A .gz file is decompressed on the fly in memory, nothing on disk."""
+    raw = os.fdopen(os.open(path, _HISTORY_OPEN_FLAGS), "rb")
+    with raw:
+        if compressed:
+            with gzip.GzipFile(fileobj=raw) as gz, \
+                 io.TextIOWrapper(gz, encoding="utf-8", errors="replace", newline="\n") as f:
+                yield f
+        else:
+            with io.TextIOWrapper(raw, encoding="utf-8", errors="replace", newline="\n") as f:
+                yield f
+
+
+def _history_first_ts(path: Path, compressed: bool) -> str:
+    """'YYYY-MM-DD HH:MM' of the first timestamped line near the top, or ''."""
+    try:
+        with _history_open(path, compressed) as f:
+            for _ in range(5):
+                line = f.readline(1024)
+                if not line:
+                    break
+                m = _HISTORY_TS_RE.match(line)
+                if m:
+                    return f"{m[1]}-{m[2]}-{m[3]} {m[4]}"
+    except (OSError, EOFError, zlib.error):
+        pass
+    return ""
+
+
+def _history_tail(path: Path, compressed: bool, limit: int) -> tuple[list[str], int, str]:
+    """Stream the file line by line, keeping only the last `limit` lines (memory
+    stays bounded by `limit`). Returns (lines, total_lines, warning). A damaged
+    or truncated .gz yields the lines read so far plus a warning; other I/O
+    errors (e.g. permission denied) propagate."""
+    tail: deque[str] = deque(maxlen=limit)
+    total = 0
+    warning = ""
+    try:
+        with _history_open(path, compressed) as f:
+            for line in f:
+                tail.append(line.rstrip("\r\n"))
+                total += 1
+    except (gzip.BadGzipFile, EOFError, zlib.error):
+        warning = "The compressed file is damaged or incomplete; showing only the lines that could be read."
+    return list(tail), total, warning
+
+
+class _HistoryError(Exception):
+    """A rejected history request: HTTP status + a message safe to show (no paths)."""
+    def __init__(self, status: int, message: str):
+        super().__init__(message)
+        self.status = status
+        self.message = message
+
+
+def _history_find(source: str, day: str) -> tuple[dict, list[dict], int, Path]:
+    """Validate (source, day) and look the file up in a fresh scan of _LOG_DIR.
+    Returns (file, source's files newest first, index, path) or raises
+    _HistoryError: 404 unknown source, 400 malformed date, 500 unreadable
+    LOG_DIR, 404 no such file."""
+    if source not in _HISTORY_SOURCES:
+        raise _HistoryError(404, "Unknown log source.")
+    if not _valid_history_day(day):
+        raise _HistoryError(400, "Invalid date: expected YYYYMMDD or 'current'.")
+    found, dir_error = _history_scan()
+    if dir_error == "unreadable":
+        raise _HistoryError(500, "The log directory can't be read by the web service.")
+    files = found[source]
+    for i, f in enumerate(files):
+        if f["day"] == day:
+            path = _history_path(f["name"])
+            if path is not None:
+                return f, files, i, path
+            break
+    raise _HistoryError(404, "Log file not found.")
+
+
+@app.get("/api/logs/history/{source}", response_class=HTMLResponse)
+def api_logs_history_files(request: Request, source: str):
+    """HTMX partial: the source's log files, newest first, with size, gz flag and
+    first timestamp. A source with no files renders an empty state (200)."""
+    meta = _HISTORY_SOURCES.get(source)
+    if meta is None:
+        return _template_response("partials/log_history_files.html", {
+            "request": request, "error": "Unknown log source.",
+        }, status_code=404)
+    found, dir_error = _history_scan()
+    files = found[source]
+    for f in files:
+        path = _history_path(f["name"])
+        f["first_ts"] = _history_first_ts(path, f["compressed"]) if path else ""
+    return _template_response("partials/log_history_files.html", {
+        "request":   request,
+        "source":    source,
+        "meta":      meta,
+        "basename":  f"{source}.log",
+        "files":     files,
+        "total_h":   _history_size(sum(f["size"] for f in files)),
+        "dir_error": dir_error,
+        "error":     "",
+    })
+
+
+@app.get("/api/logs/history/{source}/{day}", response_class=HTMLResponse)
+def api_logs_history_view(request: Request, source: str, day: str,
+                          show_all: str = Query("", alias="all")):
+    """HTMX partial: one log file in the log viewer. Renders the last
+    _HISTORY_TAIL_LINES lines, or with ?all=1 up to _HISTORY_MAX_LINES."""
+    meta = _HISTORY_SOURCES.get(source)
+    ctx = {"request": request, "source": source if meta else "", "day": "",
+           "meta": meta, "error": ""}
+    gone = "No log file for that date; it may have been rotated out. Reload the file list."
+    try:
+        f, files, idx, path = _history_find(source, day)
+    except _HistoryError as e:
+        ctx["error"] = gone if (e.status == 404 and meta) else e.message
+        return _template_response("partials/log_history_view.html", ctx, status_code=e.status)
+
+    want_all = show_all == "1"
+    try:
+        lines, total, warning = _history_tail(
+            path, f["compressed"], _HISTORY_MAX_LINES if want_all else _HISTORY_TAIL_LINES)
+    except FileNotFoundError:
+        ctx["error"] = gone
+        return _template_response("partials/log_history_view.html", ctx, status_code=404)
+    except OSError:
+        ctx["error"] = "Could not read this log file. Check that the web service's user can read LOG_DIR."
+        return _template_response("partials/log_history_view.html", ctx, status_code=500)
+
+    ctx.update({
+        "day":        f["day"],
+        "file":       f,
+        "lines":      lines,
+        "total":      total,
+        "total_h":    f"{total:,}",
+        "shown_h":    f"{len(lines):,}",
+        "tail_limit": _HISTORY_TAIL_LINES,
+        "tail_h":     f"{_HISTORY_TAIL_LINES:,}",
+        "truncated":  total > len(lines),
+        "show_all":   want_all,
+        "warning":    warning,
+        "newer":      files[idx - 1] if idx > 0 else None,
+        "older":      files[idx + 1] if idx + 1 < len(files) else None,
+    })
+    return _template_response("partials/log_history_view.html", ctx)
+
+
+@app.get("/api/logs/history/{source}/{day}/download")
+def api_logs_history_download(source: str, day: str):
+    """The raw file exactly as stored. A .gz is sent compressed as
+    application/gzip under its .gz name, with no Content-Encoding (so the browser
+    saves it as-is instead of silently inflating it); plain files go out as
+    text/plain. Reads stop at the size seen when the file was opened, so a job
+    appending to the current file mid-download can't corrupt the response."""
+    try:
+        f, _, _, path = _history_find(source, day)
+    except _HistoryError as e:
+        return PlainTextResponse(e.message, status_code=e.status)
+    try:
+        fh = os.fdopen(os.open(path, _HISTORY_OPEN_FLAGS), "rb")
+        size = os.fstat(fh.fileno()).st_size
+    except FileNotFoundError:
+        return PlainTextResponse("Log file not found.", status_code=404)
+    except OSError:
+        return PlainTextResponse("Could not read log file.", status_code=500)
+
+    def chunks():
+        with fh:
+            left = size
+            while left > 0:
+                buf = fh.read(min(65536, left))
+                if not buf:
+                    break
+                left -= len(buf)
+                yield buf
+
+    headers = {
+        "Content-Disposition":    f'attachment; filename="{f["name"]}"',
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control":          "no-store",
+    }
+    # Rotated files never change, so their length is known. The current file can
+    # be truncated by logrotate (copytruncate) mid-download: send it chunked.
+    if f["day"] != "current":
+        headers["Content-Length"] = str(size)
+    media = "application/gzip" if f["compressed"] else "text/plain; charset=utf-8"
+    return StreamingResponse(chunks(), media_type=media, headers=headers)
 
 
 @app.post("/api/run/rename-target", response_class=HTMLResponse)

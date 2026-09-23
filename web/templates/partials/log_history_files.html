@@ -1,0 +1,83 @@
+{# HTMX swap target #history-files: one source's log files, newest first (#115). #}
+{% set cols = "grid grid-cols-[6.25rem_minmax(0,1fr)_auto] sm:grid-cols-[8.5rem_minmax(0,1fr)_6rem] gap-x-3" %}
+<div {% if source %}data-list-source="{{ source }}"{% endif %}
+     class="h-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl shadow-sm overflow-hidden flex flex-col">
+  <!-- Header -->
+  <div class="flex items-center justify-between gap-3 px-5 py-3 border-b border-zinc-100 dark:border-zinc-800 shrink-0">
+    <div class="flex items-center gap-3 min-w-0">
+      <p class="text-sm font-semibold text-zinc-800 dark:text-zinc-200 whitespace-nowrap">{{ meta.label if meta else "Files" }}</p>
+      {% if basename %}<span class="text-xs font-mono text-zinc-400 truncate">{{ basename }}</span>{% endif %}
+    </div>
+    {% if source %}
+    <div class="flex items-center gap-2 shrink-0">
+      {% if files %}<span class="hidden sm:inline text-xs text-zinc-400">{{ files|length }} file{{ 's' if files|length != 1 }} · {{ total_h }}</span>{% endif %}
+      <button type="button"
+              hx-get="/api/logs/history/{{ source }}" hx-target="#history-files" hx-swap="innerHTML"
+              class="text-xs text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 transition-colors px-2 py-1 rounded hover:bg-zinc-100 dark:hover:bg-zinc-800"
+              title="Reload file list">↺</button>
+    </div>
+    {% endif %}
+  </div>
+
+  {% if error %}
+  <div class="flex-1 px-5 py-8 text-center text-sm text-red-600 dark:text-red-400">{{ error }}</div>
+
+  {% elif dir_error == "unreadable" %}
+  <div class="flex-1 px-5 py-8 text-center text-sm text-red-600 dark:text-red-400">
+    The log directory can't be read by the web service.
+  </div>
+
+  {% elif not files %}
+  <!-- Empty state: a source that hasn't written a log yet is normal, not an error -->
+  <div class="flex-1 flex flex-col items-center justify-center px-5 py-10 text-center">
+    <svg class="w-6 h-6 mb-2 text-zinc-300 dark:text-zinc-600" fill="none" stroke="currentColor" stroke-width="1.75" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4"/>
+    </svg>
+    <p class="text-sm text-zinc-500 dark:text-zinc-400">No log files for {{ meta.label }} yet</p>
+    <p class="text-xs text-zinc-400 mt-1">
+      {% if dir_error == "missing" %}The log directory doesn't exist yet.
+      {% else %}Files appear here once the job writes <code class="font-mono">{{ basename }}</code>.{% endif %}
+    </p>
+  </div>
+
+  {% else %}
+  <!-- Column headings -->
+  <div class="{{ cols }} px-5 py-2 text-xs text-zinc-500 uppercase tracking-wider bg-zinc-50 dark:bg-zinc-800/50 border-b border-zinc-100 dark:border-zinc-800 shrink-0">
+    <span class="font-medium">Date</span>
+    <span class="font-medium" title="Timestamp of the first entry in the file">Starts</span>
+    <span class="font-medium text-right">Size</span>
+  </div>
+  <!-- Rows: one button per file, loads it into the viewer -->
+  <div class="flex-1 min-h-0 max-h-80 lg:max-h-none overflow-y-auto divide-y divide-zinc-100 dark:divide-zinc-800">
+    {% for f in files %}
+    <button type="button"
+            data-day="{{ f.day }}"
+            aria-current="false"
+            hx-get="/api/logs/history/{{ source }}/{{ f.day }}"
+            hx-target="#history-viewer"
+            hx-swap="innerHTML"
+            title="{{ f.name }} · modified {{ f.mtime }}"
+            class="{{ cols }} w-full items-center px-5 py-2 text-left hover:bg-zinc-50 dark:hover:bg-zinc-800/50 transition-colors
+                   aria-[current=true]:bg-brand-50 dark:aria-[current=true]:bg-brand-900/20">
+      <span class="flex items-baseline gap-2 min-w-0">
+        {% if f.day == "current" %}
+        <span class="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-600 dark:text-emerald-400">
+          <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>current
+        </span>
+        {% else %}
+        <span class="font-mono text-xs text-zinc-800 dark:text-zinc-200">{{ f.date_label }}</span>
+        <span class="hidden sm:inline text-xs text-zinc-400">{{ f.weekday }}</span>
+        {% endif %}
+      </span>
+      <span class="font-mono text-xs text-zinc-400 truncate">
+        {% if f.first_ts %}<span class="sm:hidden">{{ f.first_ts[5:] }}</span><span class="hidden sm:inline">{{ f.first_ts }}</span>{% else %}—{% endif %}
+      </span>
+      <span class="flex items-center justify-end gap-1.5 font-mono text-xs text-zinc-400 whitespace-nowrap">
+        {% if f.compressed %}<span class="text-[10px] leading-none px-1 py-0.5 rounded border border-zinc-200 dark:border-zinc-700 bg-zinc-100 dark:bg-zinc-800 text-zinc-500" title="gzip-compressed">gz</span>{% endif %}
+        {{ f.size_h }}
+      </span>
+    </button>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>

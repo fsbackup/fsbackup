@@ -1,0 +1,155 @@
+{# Logs > History tab (#115). Included by logs.html when tab == "history".
+   Sources (left) -> file list (right, HTMX /api/logs/history/<source>)
+   -> viewer below (HTMX /api/logs/history/<source>/<day>). #}
+
+<p class="text-xs text-zinc-400 -mt-3 mb-5 max-w-3xl">
+  Files in <code class="font-mono bg-zinc-100 dark:bg-zinc-800 px-1 rounded">{{ log_dir }}</code>, rotated daily.
+  Each file is dated the day it was rotated (just after midnight), so it mostly covers the day before.
+  <span class="font-medium text-zinc-500">Starts</span> shows its first entry.
+</p>
+
+{% if history_error == "unreadable" %}
+<div class="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl px-4 py-3 text-red-700 dark:text-red-400 text-sm mb-4">
+  The web service can't read the log directory. Check that the <code class="font-mono">fsbackup</code> user can read <code class="font-mono">LOG_DIR</code>.
+</div>
+{% elif history_error == "missing" %}
+<div class="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl px-4 py-3 text-amber-700 dark:text-amber-400 text-sm mb-4">
+  The log directory doesn't exist yet. <code class="font-mono">fs-install.sh</code> creates it, and so does the first job that runs.
+</div>
+{% endif %}
+
+<div class="grid grid-cols-1 lg:grid-cols-[15rem_minmax(0,1fr)] gap-4 mb-4">
+
+  <!-- Sources: chips that wrap on phones, a vertical list from lg up -->
+  <div id="history-sources" class="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl shadow-sm overflow-hidden">
+    <div class="px-5 py-3 border-b border-zinc-100 dark:border-zinc-800">
+      <p class="text-sm font-semibold text-zinc-800 dark:text-zinc-200">Sources</p>
+    </div>
+    <div class="p-3 space-y-3">
+      {% for g in history_groups %}
+      <div>
+        <p class="px-1 lg:px-2.5 mb-1.5 lg:mb-1 text-[11px] font-semibold text-zinc-400 uppercase tracking-wider">{{ g.name }}</p>
+        <div class="flex flex-wrap gap-1.5 lg:flex-col lg:flex-nowrap lg:gap-0.5">
+          {% for s in g.sources %}
+          <button type="button"
+                  data-source="{{ s.key }}"
+                  aria-current="{{ 'true' if s.key == history_source else 'false' }}"
+                  hx-get="/api/logs/history/{{ s.key }}"
+                  hx-target="#history-files"
+                  hx-swap="innerHTML"
+                  title="{{ s.key }}.log"
+                  class="inline-flex items-center justify-between gap-2 lg:w-full px-2.5 py-1.5 rounded-lg text-xs lg:text-sm text-left border border-zinc-200 dark:border-zinc-700 lg:border-transparent dark:lg:border-transparent text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 hover:text-zinc-900 dark:hover:text-white transition-colors
+                         aria-[current=true]:bg-brand-50 aria-[current=true]:border-brand-200 aria-[current=true]:text-brand-700 aria-[current=true]:font-medium
+                         dark:aria-[current=true]:bg-brand-900/20 dark:aria-[current=true]:border-brand-800 dark:aria-[current=true]:text-brand-300">
+            <span>{{ s.short }}</span>
+            <span class="font-mono text-[11px] tabular-nums {% if s.count %}text-zinc-400{% else %}text-zinc-300 dark:text-zinc-600{% endif %}"
+                  title="{{ s.count }} file{{ 's' if s.count != 1 }}">{{ s.count }}</span>
+          </button>
+          {% endfor %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <!-- Files for the selected source. From lg up the card is pinned to the
+       height of the Sources card and scrolls inside it. -->
+  <div class="relative min-w-0 min-h-[12rem]">
+    <div id="history-files" class="lg:absolute lg:inset-0"
+         {% if history_source %}hx-get="/api/logs/history/{{ history_source }}" hx-trigger="load" hx-swap="innerHTML"{% endif %}>
+      <div class="h-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl shadow-sm overflow-hidden flex flex-col">
+        <div class="px-5 py-3 border-b border-zinc-100 dark:border-zinc-800">
+          <p class="text-sm font-semibold text-zinc-800 dark:text-zinc-200">Files</p>
+        </div>
+        <div class="flex-1 flex items-center justify-center px-4 py-10 text-center text-zinc-400 text-sm">
+          {% if history_source %}Loading…{% else %}Pick a source to list its log files, newest first.{% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Viewer -->
+<div id="history-viewer"
+     {% if history_source and history_day %}hx-get="/api/logs/history/{{ history_source }}/{{ history_day }}" hx-trigger="load" hx-swap="innerHTML"{% endif %}>
+  {% if history_source and history_day %}
+  <div class="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl shadow-sm px-4 py-10 text-center text-zinc-400 text-sm">Loading…</div>
+  {% else %}
+  {% include "partials/log_history_placeholder.html" %}
+  {% endif %}
+</div>
+
+<template id="history-viewer-empty">{% include "partials/log_history_placeholder.html" %}</template>
+
+<script>
+(function () {
+  const sourcesEl = document.getElementById('history-sources');
+  const filesEl   = document.getElementById('history-files');
+  const viewerEl  = document.getElementById('history-viewer');
+
+  // aria-current drives the selected styling (Tailwind aria-[current=true]:…)
+  function mark(root, attr, value) {
+    root.querySelectorAll('[' + attr + ']').forEach(el =>
+      el.setAttribute('aria-current', el.getAttribute(attr) === value ? 'true' : 'false'));
+  }
+  function listed() {
+    const el = filesEl.querySelector('[data-list-source]');
+    return el ? el.dataset.listSource : '';
+  }
+  function viewed() {
+    const el = viewerEl.querySelector('[data-view-source]');
+    return el ? { source: el.dataset.viewSource, day: el.dataset.viewDay } : null;
+  }
+  // Keep the address bar shareable (replaceState: no extra history entries)
+  function syncUrl() {
+    const p = new URLSearchParams({ tab: 'history' });
+    const src = listed();
+    const v = viewed();
+    if (src) p.set('source', src);
+    if (src && v && v.source === src && v.day) p.set('date', v.day);
+    try { history.replaceState(null, '', '/logs?' + p.toString()); } catch (e) {}
+  }
+
+  // The history endpoints answer 400/404/500 with a readable partial: show it
+  // in place instead of htmx's default of ignoring error responses.
+  document.body.addEventListener('htmx:beforeSwap', e => {
+    const t = e.detail.target;
+    if ((t === filesEl || t === viewerEl) && e.detail.xhr.status >= 400) {
+      e.detail.shouldSwap = true;
+      e.detail.isError = false;
+    }
+  });
+
+  document.body.addEventListener('htmx:afterSwap', e => {
+    const t = e.detail.target;
+    if (t === filesEl) {
+      const src = listed();
+      mark(sourcesEl, 'data-source', src);
+      const v = viewed();
+      if (v && v.source !== src) {
+        viewerEl.innerHTML = document.getElementById('history-viewer-empty').innerHTML;
+      } else if (v) {
+        mark(filesEl, 'data-day', v.day);
+      }
+      syncUrl();
+    } else if (t === viewerEl) {
+      const v = viewed();
+      if (v && v.source === listed()) mark(filesEl, 'data-day', v.day);
+      syncUrl();
+      // Opened from the file list and the viewer starts low on screen (always
+      // on phones): bring it up. Older/Newer/Show all inside it never scroll.
+      const from = e.detail.requestConfig && e.detail.requestConfig.elt;
+      if (from && filesEl.contains(from) &&
+          viewerEl.getBoundingClientRect().top > window.innerHeight * 0.4) {
+        viewerEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    }
+  });
+
+  window.histScroll = function (where) {
+    const pre = viewerEl.querySelector('pre');
+    if (pre) pre.scrollTop = where === 'end' ? pre.scrollHeight : 0;
+  };
+})();
+</script>

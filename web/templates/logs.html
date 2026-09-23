@@ -4,9 +4,23 @@
 {% block content %}
 <div class="mb-6">
   <h1 class="text-2xl font-bold text-zinc-900 dark:text-white">Logs</h1>
-  <p class="text-zinc-500 text-sm mt-1">Live log output for all backup jobs</p>
+  <p class="text-zinc-500 text-sm mt-1">{% if tab == "history" %}Past log files by date, for every job{% else %}Live log output for all backup jobs{% endif %}</p>
 </div>
 
+<!-- Tab bar -->
+<div class="flex gap-1 mb-6 border-b border-zinc-200 dark:border-zinc-800">
+  {% for tid, tlabel, thref in [("live", "Live", "/logs"), ("history", "History", "/logs?tab=history")] %}
+    <a href="{{ thref }}"
+       class="px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors
+              {% if tab == tid %}border-brand-600 text-brand-600 dark:text-brand-400 dark:border-brand-400{% else %}border-transparent text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white hover:border-zinc-300 dark:hover:border-zinc-600{% endif %}">
+      {{ tlabel }}
+    </a>
+  {% endfor %}
+</div>
+
+{% if tab == "history" %}
+{% include "partials/log_history.html" %}
+{% else %}
 <!-- Log sections -->
 <div class="space-y-4 mb-10">
   {% for unit, label, filename in log_sections %}
@@ -233,4 +247,5 @@ function loadModal() {
 
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeLogModal(); });
 </script>
+{% endif %}
 {% endblock %}
