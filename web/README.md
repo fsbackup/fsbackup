@@ -48,6 +48,7 @@ web/
       log_history.html     # Logs > History tab body (sources, file list, viewer slots)
       log_history_files.html  # HTMX swap target: one source's log files by date
       log_history_view.html   # HTMX swap target: one log file in the viewer
+      log_history_placeholder.html  # Empty History viewer shown before a date is picked
 ```
 
 ### Stack
