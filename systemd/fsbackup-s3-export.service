@@ -8,3 +8,9 @@ Type=oneshot
 User=fsbackup
 Group=fsbackup
 ExecStart=/opt/fsbackup/s3/fs-export-s3.sh
+SyslogIdentifier=fsbackup-s3-export
+# Log files go to LOG_DIR (default /var/log/fsbackup). LogsDirectory= makes
+# systemd create /var/log/fsbackup (fsbackup:fsbackup, 0750) if it is missing.
+# Never add it to a User=root unit: systemd would chown the whole dir to root.
+LogsDirectory=fsbackup
+LogsDirectoryMode=0750

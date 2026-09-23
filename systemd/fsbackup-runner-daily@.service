@@ -9,6 +9,12 @@ Type=oneshot
 User=fsbackup
 Group=fsbackup
 ExecStart=/opt/fsbackup/bin/fs-runner.sh daily --class %i
+SyslogIdentifier=fsbackup-runner-%i
+# Log files go to LOG_DIR (default /var/log/fsbackup). LogsDirectory= makes
+# systemd create /var/log/fsbackup (fsbackup:fsbackup, 0750) if it is missing.
+# Never add it to a User=root unit: systemd would chown the whole dir to root.
+LogsDirectory=fsbackup
+LogsDirectoryMode=0750
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=6

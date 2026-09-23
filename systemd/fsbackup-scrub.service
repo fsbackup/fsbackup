@@ -14,3 +14,6 @@ Type=oneshot
 TimeoutStartSec=2d
 User=root
 ExecStart=/opt/fsbackup/bin/fs-scrub-check.sh
+SyslogIdentifier=fsbackup-scrub
+# Runs as root: do not add LogsDirectory= here (systemd would chown
+# /var/log/fsbackup and everything in it to root).

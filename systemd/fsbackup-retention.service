@@ -6,4 +6,11 @@ After=fsbackup-runner-daily@class1.service fsbackup-runner-daily@class2.service
 UMask=0022
 Type=oneshot
 User=fsbackup
+Group=fsbackup
 ExecStart=/opt/fsbackup/bin/fs-retention.sh
+SyslogIdentifier=fsbackup-retention
+# Log files go to LOG_DIR (default /var/log/fsbackup). LogsDirectory= makes
+# systemd create /var/log/fsbackup (fsbackup:fsbackup, 0750) if it is missing.
+# Never add it to a User=root unit: systemd would chown the whole dir to root.
+LogsDirectory=fsbackup
+LogsDirectoryMode=0750
