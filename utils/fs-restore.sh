@@ -18,6 +18,12 @@ set -o pipefail
 #   fs-restore.sh list [--type <type>] [--class <class>] [--id <id>]
 #   fs-restore.sh restore --class <class> --id <id> (--snapshot <name> | --latest [--type <type>]) --to <path>
 #   fs-restore.sh restore --class <class> --id <id> (--snapshot <name> | --latest [--type <type>]) --to-host <host> --to-path <path>
+#   add --dry-run to any restore to preview without copying
+#
+# Remote restores push as backup@<host> (the same account and SSH key the
+# runner pulls with), so they can only write where that user can — typically
+# a staging dir such as /var/tmp/fsbackup-restore/ — and files end up owned
+# by backup. The host key must already be trusted (fs-trust-host.sh).
 #
 # Examples:
 #   fs-restore.sh list
@@ -54,6 +60,7 @@ LATEST=0
 TO=""
 TO_HOST=""
 TO_PATH=""
+DRY_RUN=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -65,6 +72,7 @@ while [[ $# -gt 0 ]]; do
     --to)        TO="$2"; shift 2 ;;
     --to-host)   TO_HOST="$2"; shift 2 ;;
     --to-path)   TO_PATH="$2"; shift 2 ;;
+    --dry-run)   DRY_RUN=1; shift ;;
     -h|--help)   usage ;;
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -75,6 +83,22 @@ if [[ -n "$TYPE" ]]; then
     daily|weekly|monthly|annual) ;;
     *) echo "Invalid --type: $TYPE (must be daily|weekly|monthly|annual)" >&2; exit 2 ;;
   esac
+fi
+
+# Class, id and snapshot become path components under SNAPSHOT_ROOT; the remote
+# host and path go to ssh/rsync. Validate them so none can traverse or be read
+# as an option.
+valid_component() { [[ "$1" =~ ^[A-Za-z0-9._-]+$ && "$1" != .* ]]; }
+for pair in "class:$CLASS" "id:$ID" "snapshot:$SNAPSHOT"; do
+  name="${pair%%:*}"; val="${pair#*:}"
+  [[ -z "$val" ]] || valid_component "$val" || { echo "Invalid --${name}: $val" >&2; exit 2; }
+done
+if [[ -n "$TO_HOST" ]]; then
+  [[ "$TO_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$ ]] || { echo "Invalid --to-host: $TO_HOST" >&2; exit 2; }
+fi
+if [[ -n "$TO_PATH" ]]; then
+  [[ "$TO_PATH" =~ ^/[A-Za-z0-9._/+@=-]*$ && "$TO_PATH" != "/" && ! "$TO_PATH" =~ (^|/)\.\.(/|$) ]] \
+    || { echo "Invalid --to-path (absolute path; letters, digits and . _ / + @ = - only; no ..): $TO_PATH" >&2; exit 2; }
 fi
 
 # list_snapshots <dataset> — print snapshot names (newest first), filtered by $TYPE if set
@@ -186,16 +210,21 @@ case "$CMD" in
     echo "Source:  ${CLASS}/${ID}@${snap}"
     echo "Data:    ${snap_data}"
 
+    RSYNC=(rsync -a --info=progress2)
+    [[ "$DRY_RUN" -eq 1 ]] && RSYNC+=(--dry-run --itemize-changes)
+
     if [[ -n "$TO" ]]; then
-      mkdir -p "$TO"
-      rsync -a --info=progress2 "${snap_data}/" "${TO}/"
-      echo "Restored to: ${TO}"
+      [[ "$DRY_RUN" -eq 1 ]] || mkdir -p "$TO"
+      "${RSYNC[@]}" "${snap_data}/" "${TO}/" || exit $?
+      echo "$([[ $DRY_RUN -eq 1 ]] && echo 'Dry run — would restore to' || echo 'Restored to'): ${TO}"
       exit 0
     fi
 
-    ssh "${BACKUP_SSH_USER}@${TO_HOST}" "mkdir -p '${TO_PATH}'"
-    rsync -a --info=progress2 "${snap_data}/" "${BACKUP_SSH_USER}@${TO_HOST}:${TO_PATH%/}/"
-    echo "Restored to: ${TO_HOST}:${TO_PATH}"
+    # --mkpath creates the destination on the remote side (rsync >= 3.2.3), so
+    # no remote shell command is built from the path.
+    "${RSYNC[@]}" --mkpath -e "ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=10" \
+      "${snap_data}/" "${BACKUP_SSH_USER}@${TO_HOST}:${TO_PATH%/}/" || exit $?
+    echo "$([[ $DRY_RUN -eq 1 ]] && echo 'Dry run — would restore to' || echo 'Restored to'): ${TO_HOST}:${TO_PATH}"
     ;;
 
 # -----------------------------------------------------------------------------

@@ -77,6 +77,16 @@ sudo -u fsbackup /opt/fsbackup/utils/fs-restore.sh restore \
 This restores to `/tmp/restore-bind` on `ns1`. Always restore to a staging path first,
 verify the contents, then move into place as root.
 
+- The push runs as `backup@<host>`, so it can only write where that user can (a staging
+  dir such as `/var/tmp/fsbackup-restore/…`), and restored files are owned by `backup`.
+- The host key must already be trusted (Configuration → Hosts, or `fs-trust-host.sh`).
+- The destination is created with `rsync --mkpath` (rsync ≥ 3.2.3 on both ends).
+- Add `--dry-run` to list what would be copied without writing anything.
+
+**From the web UI:** on the Restore page choose **Restore to → Remote host**, pick a host
+(only hosts from `targets.yml` with a trusted key are listed) and an absolute path. Dry run
+is on by default. Any snapshot directory or subdirectory can be pushed.
+
 ---
 
 ## Flags reference
@@ -89,7 +99,8 @@ verify the contents, then move into place as root.
 | `--snapshot` | restore | Exact snapshot name, e.g. `weekly-2026-W10` |
 | `--latest` | restore | Use the most recent snapshot (optionally of `--type`) |
 | `--to` | restore | Local destination directory |
-| `--to-host` + `--to-path` | restore | Remote host and path (rsync over SSH) |
+| `--to-host` + `--to-path` | restore | Remote host and path (rsync over SSH as `backup`) |
+| `--dry-run` | restore | Preview: list what would be copied, write nothing |
 
 `--snapshot` and `--latest` are mutually exclusive; give exactly one. Likewise choose
 either `--to` (local) or `--to-host` + `--to-path` (remote).

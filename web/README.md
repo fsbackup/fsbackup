@@ -128,6 +128,13 @@ validated to be within `SNAPSHOT_ROOT` before execution. Dry-run mode
 (default: on) passes `--dry-run --stats` to rsync and displays a preview without
 modifying any files.
 
+**Restore to → Remote host** pushes to `backup@<host>:<path>` with
+`rsync --mkpath -e "ssh -o BatchMode=yes -o StrictHostKeyChecking=yes"` (as the
+`fsbackup` user, with the runner's SSH key). Only hosts from `targets.yml` with a
+trusted host key are offered; the path must be absolute, use a conservative
+charset, and contain no `..`. The remote `backup` user can only write where its
+permissions allow (e.g. `/var/tmp/…`), so restore to a staging directory.
+
 ---
 
 ## Configuration
