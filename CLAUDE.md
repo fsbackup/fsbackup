@@ -118,7 +118,7 @@ Parameterized by class instance (e.g. `@class1`):
 
 All log files live in `LOG_DIR` (default `/var/log/fsbackup/`):
 `backup-<class>.log` (runner, all types), `retention.log`, `s3-export.log`, `doctor-<class>.log`,
-`fs-orphans.log` (orphan events, all classes), `scrub.log` (#114).
+`fs-orphans.log` (orphan events, all classes), `scrub.log` (monthly ZFS scrub, full `zpool status`).
 
 | Destination | Content |
 |---|---|

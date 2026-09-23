@@ -192,10 +192,10 @@ SCRUB_MAX_AGE_DAYS="${SCRUB_MAX_AGE_DAYS:-35}"
 _is_ts()  { [[ "$1" =~ ^[0-9]+(\.[0-9]+)?$ ]]; }
 _is_int() { [[ "$1" =~ ^[0-9]+$ ]]; }
 
-echo "ZFS scrub"
+say "ZFS scrub"
 # -f: a FIFO planted in the textfile dir would otherwise hang the doctor.
 if [[ ! -f "$SCRUB_PROM" || ! -r "$SCRUB_PROM" ]]; then
-  printf "%-28s %-6s %s\n" "-" "WARN" "no scrub result yet (fsbackup-scrub.service has not finished a run)"
+  row "-" "WARN" "no scrub result yet (fsbackup-scrub.service has not finished a run)"
 else
   NOW_TS="$(date +%s)"
   scrub_rows=0
@@ -204,22 +204,22 @@ else
     scrub_rows=$((scrub_rows + 1))
     if [[ ! "$s_ok" =~ ^[01]$ ]] || ! _is_ts "$s_run" || ! _is_int "$s_prob" ||
        { [[ "$s_last" != "-" ]] && ! _is_ts "$s_last"; }; then
-      printf "%-28s %-6s %s\n" "$pool" "WARN" "unreadable scrub result in ${SCRUB_PROM}"
+      row "$pool" "WARN" "unreadable scrub result in ${SCRUB_PROM}"
       continue
     fi
     s_run="${s_run%.*}"; s_last="${s_last%.*}"
     if [[ "$s_ok" == "0" ]]; then
-      printf "%-28s %-6s %s\n" "$pool" "WARN" \
+      row "$pool" "WARN" \
         "last scrub check FAILED on $(date -d "@${s_run}" +%F 2>/dev/null || echo '?') (${s_prob} problem(s)); see journalctl -u fsbackup-scrub"
     elif [[ "$s_last" == "-" ]]; then
-      printf "%-28s %-6s %s\n" "$pool" "WARN" "no clean scrub on record"
+      row "$pool" "WARN" "no clean scrub on record"
     else
       age_days=$(( (NOW_TS - 10#$s_last) / 86400 ))
       if (( age_days > 10#$SCRUB_MAX_AGE_DAYS )); then
-        printf "%-28s %-6s %s\n" "$pool" "WARN" \
+        row "$pool" "WARN" \
           "last clean scrub ${age_days} days ago (> ${SCRUB_MAX_AGE_DAYS}); check fsbackup-scrub.timer"
       else
-        printf "%-28s %-6s %s\n" "$pool" "OK" \
+        row "$pool" "OK" \
           "last clean scrub $(date -d "@${s_last}" +%F) (${age_days} days ago)"
       fi
     fi
@@ -240,10 +240,10 @@ else
       }
     }' "$SCRUB_PROM")
   if [[ "$scrub_rows" -eq 0 ]]; then
-    printf "%-28s %-6s %s\n" "-" "WARN" "no pool results in ${SCRUB_PROM}"
+    row "-" "WARN" "no pool results in ${SCRUB_PROM}"
   fi
 fi
-echo
+say
 
 END_TS=$(date +%s.%N)
 DURATION=$(awk "BEGIN {print $END_TS - $START_TS}")

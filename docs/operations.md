@@ -39,6 +39,9 @@ Doctor summary
   WARN:  0
   FAIL:  0
 
+ZFS scrub
+backup                       OK     last clean scrub 2026-09-05 (18 days ago)
+
 2026-09-23T02:05:03-06:00 [doctor] Doctor complete: class=class2 ok=3 warn=0 fail=0 missing_datasets=0 orphans=0 duration=1.2s
 ```
 
@@ -48,17 +51,10 @@ so past runs rotate with the other logs.
 Any `FAIL` must be resolved before the runner will succeed for that target. A `WARN`
 for a missing dataset clears itself once the target is provisioned (see below).
 
-The report ends with a pool-level **ZFS scrub** line, read from the metrics that
+The **ZFS scrub** line at the end is pool-level, read from the metrics that
 `fs-scrub-check.sh` writes. It warns if the last scrub check failed, or if the last clean
-scrub is more than `SCRUB_MAX_AGE_DAYS` (default 35) days old:
-
-```
-ZFS scrub
-backup                       OK     last clean scrub 2026-10-05 (3 days ago)
-```
-
-This line is informational: it isn't counted in the target summary. See
-[ZFS scrub](#zfs-scrub) below.
+scrub is more than `SCRUB_MAX_AGE_DAYS` (default 35) days old. It is informational: it
+isn't counted in the target summary. See [ZFS scrub](#zfs-scrub) below.
 
 ### Logs
 
@@ -245,10 +241,12 @@ Output:
 
 - journald (`journalctl -u fsbackup-scrub`): the start line, one result line for the pool,
   a summary line, and one `ERROR` line per problem
-- `/var/lib/fsbackup/log/scrub.log` (`$LOG_DIR/scrub.log`): the same lines, plus the full
-  `zpool status -p` output. The job runs as root but writes this file as `fsbackup`, so it
-  stays fsbackup-owned. If the log directory is missing and `fsbackup` can't create it,
-  the journal gets one `[log] WARN cannot write …` line and the check still runs.
+- `/var/log/fsbackup/scrub.log` (`$LOG_DIR/scrub.log`): the same lines, plus the full
+  `zpool status -p` output. The job runs as root, but `lib/log.sh` writes this file as
+  `fsbackup` (through `setpriv`), so it stays fsbackup-owned and root never follows a
+  symlink planted in the log directory. If the log directory is missing (`fsbackup` can't
+  create it under `/var/log`), the journal gets one `[log] WARN cannot write …` line and
+  the check still runs.
 - `fsbackup_scrub.prom`: `fsbackup_scrub_success{pool}`,
   `fsbackup_scrub_last_success_seconds{pool}`, `fsbackup_scrub_problems{pool}` and more
   (see [reference.md](reference.md#prometheus-metrics)). Alert on
@@ -262,6 +260,7 @@ cat /var/lib/node_exporter/textfile_collector/fsbackup_scrub.prom
 
 ```bash
 journalctl -u fsbackup-scrub.service -n 50    # which checks failed
+sudo tail -60 /var/log/fsbackup/scrub.log     # the run's full zpool status -p
 sudo zpool status -v backup                   # device states, counters, damaged files (-v needs root)
 ```
 
