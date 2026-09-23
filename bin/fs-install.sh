@@ -104,8 +104,10 @@ echo
 # 3. Install scripts
 # ---------------------------------------------------------------------------
 info "Installing to ${INSTALL_DIR}..."
+# .claude: agent worktrees (other branches' unreviewed code) never go to /opt.
 rsync -a --delete \
     --exclude='.git' \
+    --exclude='.claude' \
     --exclude='web/.venv' \
     --exclude='web/.env' \
     --exclude='conf/targets.yml' \

@@ -192,7 +192,9 @@ FastAPI + HTMX + Tailwind CDN. `fsbackup-web.service` on `0.0.0.0:8080`.
 - `/etc/fsbackup` has `u:fsbackup:rwx` (web targets.yml editor) **plus the sticky bit** so fsbackup can't replace root-owned `fsbackup.conf`, which root-run scripts source (#105).
 - Remote: `git@github.com:fsbackup/fsbackup.git`
 - **main is branch-protected** — always branch + PR
-- Deploy: `sudo rsync -a --delete --exclude='.git' --exclude='web/.venv' --exclude='web/.env' --exclude='conf/targets.yml' /home/crash/projects/fsbackup/ /opt/fsbackup/`
+- Deploy: `sudo rsync -a --delete --exclude='.git' --exclude='.claude' --exclude='web/.venv' --exclude='web/.env' --exclude='conf/targets.yml' /home/crash/projects/fsbackup/ /opt/fsbackup/`
+  (`.claude` holds agent worktrees with other branches' unreviewed code; it must never reach `/opt`.)
+- Verify a deploy: `diff -rq -x .git -x .claude -x .venv -x .env -x targets.yml -x __pycache__ /home/crash/projects/fsbackup /opt/fsbackup`
 - `conf/targets.yml` is gitignored — never commit it
 - Current release: **v2.2.0**
 

@@ -119,7 +119,7 @@ If you prefer to install by hand, the steps mirror what `fs-install.sh` does:
 
 2. **Install the scripts**:
    ```bash
-   sudo rsync -a --delete --exclude='.git' --exclude='web/.venv' \
+   sudo rsync -a --delete --exclude='.git' --exclude='.claude' --exclude='web/.venv' \
      --exclude='web/.env' --exclude='conf/targets.yml' \
      /home/<user>/fsbackup/ /opt/fsbackup/
    sudo chown -R fsbackup:fsbackup /opt/fsbackup
@@ -173,9 +173,10 @@ use the rsync one-liner directly:
 
 ```bash
 cd /home/<user>/fsbackup && git pull --ff-only
-sudo rsync -a --delete --exclude='.git' --exclude='web/.venv' \
+sudo rsync -a --delete --exclude='.git' --exclude='.claude' --exclude='web/.venv' \
   --exclude='web/.env' --exclude='conf/targets.yml' \
   /home/<user>/fsbackup/ /opt/fsbackup/
+# (.claude: Claude Code agent worktrees, never deployed)
 # Restart the web UI if web/ changed; reload systemd if unit files changed:
 sudo systemctl restart fsbackup-web.service
 ```
