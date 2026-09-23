@@ -112,6 +112,7 @@ Parameterized by class instance (e.g. `@class1`):
 
 Per-class runner logs: `/var/lib/fsbackup/log/backup-<class>.log`
 Other logs in same dir: `s3-export.log`, `fs-orphans.log`
+Doctor output has no log file — it goes to the journal (`journalctl -u fsbackup-doctor@<class>`); `fs-orphans.log` only records orphan events (all classes).
 
 ---
 

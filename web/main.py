@@ -835,7 +835,10 @@ _LOG_SECTIONS = [
     ("fsbackup-runner-daily@class2.service",   "Backup — class2",   "backup-class2.log"),
     ("fsbackup-runner-daily@class3.service",   "Backup — class3",   "backup-class3.log"),
     ("fsbackup-s3-export.service",             "S3 export",         "s3-export.log"),
-    ("fsbackup-doctor@class1.service",         "Doctor — class1",   "fs-orphans.log"),
+    ("fsbackup-doctor@class1.service",         "Doctor — class1",   "journal"),
+    ("fsbackup-doctor@class2.service",         "Doctor — class2",   "journal"),
+    ("fsbackup-doctor@class3.service",         "Doctor — class3",   "journal"),
+    ("fs-orphans",                             "Orphans",           "fs-orphans.log"),
 ]
 
 
@@ -1278,9 +1281,12 @@ _LOG_DIR = Path("/var/lib/fsbackup/log")
 
 # Map unit name prefixes/patterns to their log files (most specific first).
 # Runner units are per-class: fsbackup-runner-{type}@{class}.service → backup-{class}.log
+# Doctor units have no log file — the report goes to stdout, so they fall through
+# to journalctl. fs-orphans.log only records orphan events (all classes) and is
+# exposed under the pseudo-unit "fs-orphans".
 _UNIT_LOG_MAP = [
     ("fsbackup-s3-export",   _LOG_DIR / "s3-export.log"),
-    ("fsbackup-doctor@",     _LOG_DIR / "fs-orphans.log"),
+    ("fs-orphans",           _LOG_DIR / "fs-orphans.log"),
     ("fsbackup-scrub",       _LOG_DIR / "s3-export.log"),  # scrub logs to s3 file for now
 ]
 
