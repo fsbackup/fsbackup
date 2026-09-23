@@ -134,6 +134,7 @@ Root-run scripts (e.g. `fs-scrub-check.sh`): when `EUID` is 0, `lib/log.sh` does
 because fsbackup owns `LOG_DIR` and could plant a symlink (`scrub.log -> /etc/shadow`) that a root `>>` or `chown` would follow, or a FIFO that a normal open would block on (hence `dd oflag=nonblock` in root mode, and a regular-file check otherwise).
 So root code must never open, create or `chown` anything in `LOG_DIR` itself; just use the helpers. New files stay fsbackup-owned, so logrotate can rotate them.
 The web log viewer (`/api/journal/<unit>`) reads the current file + newest uncompressed rotated file, and falls back to `journalctl -u` when a unit has no file yet.
+Both Logs tabs open files in `LOG_DIR` only through `_log_fd_open()` (`O_NOFOLLOW` + `O_NONBLOCK`, regular files only); don't add a plain `open()`/`read_text()` of a log path.
 
 ---
 

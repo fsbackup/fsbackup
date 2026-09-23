@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """fsbackup web UI — FastAPI + HTMX + Tailwind"""
 
+import errno
 import gzip
 import io
 import os
 import re
 import secrets
 import shutil
+import stat
 import subprocess
 import threading
 import time
@@ -16,7 +18,7 @@ from collections import deque
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
@@ -215,7 +217,12 @@ async def security_gate(request: Request, call_next):
         return PlainTextResponse("CSRF check failed", status_code=403)
     # Auth: redirect unauthenticated users to the login page.
     if AUTH_ENABLED and request.url.path not in _PUBLIC_PATHS and not request.url.path.startswith("/static/") and not request.session.get("user"):
-        return RedirectResponse(url=f"/login?next={request.url.path}", status_code=302)
+        # Keep the query string, so a deep link such as
+        # /logs?tab=history&source=backup-class1&date=20260920 survives the
+        # login. Quoted, so its & and = stay inside the next parameter;
+        # login checks the decoded value with _safe_next.
+        target = request.url.path + (f"?{request.url.query}" if request.url.query else "")
+        return RedirectResponse(url=f"/login?next={quote(target, safe='/')}", status_code=302)
     response = await call_next(request)
     return response
 
@@ -1618,17 +1625,34 @@ def _unit_log_file(unit: str) -> Path | None:
     return None
 
 
+def _is_regular_file(path: Path) -> bool:
+    """path itself is a regular file: not a symlink, FIFO, directory, ..."""
+    try:
+        return stat.S_ISREG(path.lstat().st_mode)
+    except OSError:
+        return False
+
+
 def _rotated_logs(log_path: Path) -> list[Path]:
-    """Uncompressed rotated copies of log_path (<name>.log-YYYYMMDD), oldest first."""
-    return sorted(log_path.parent.glob(
+    """Uncompressed rotated copies of log_path (<name>.log-YYYYMMDD), oldest
+    first. Regular files only, as in the History tab."""
+    return sorted(p for p in log_path.parent.glob(
         f"{log_path.name}-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]"
-    ))
+    ) if _is_regular_file(p))
+
+
+def _journal_file_lines(path: Path) -> list[str]:
+    """All lines of a plain log file, read through _history_open (no symlinks
+    followed, never blocks on a FIFO, regular files only)."""
+    with _history_open(path, False) as f:
+        return f.read().splitlines()
 
 
 @app.get("/api/journal/{unit:path}", response_class=HTMLResponse)
 async def api_journal(request: Request, unit: str, n: int = 200):
     """Return the last n lines of the unit's log file in _LOG_DIR, falling back
-    to journalctl for units with no log file (yet)."""
+    to journalctl for units with no log file (yet). Like the History tab, only
+    regular files are read: a symlink or FIFO in LOG_DIR counts as no file."""
     lines: list[str] = []
     error: str = ""
 
@@ -1637,7 +1661,9 @@ async def api_journal(request: Request, unit: str, n: int = 200):
     if log_path:
         rotated = _rotated_logs(log_path)
         try:
-            current = log_path.exists()
+            current = stat.S_ISREG(log_path.lstat().st_mode)
+        except FileNotFoundError:
+            current = False
         except OSError:
             current = True   # e.g. permission denied: let the read below report it
         if current or rotated:
@@ -1646,9 +1672,9 @@ async def api_journal(request: Request, unit: str, n: int = 200):
                 # Include the most recent uncompressed rotated file (delaycompress),
                 # giving ~1-2 nights of history in the viewer.
                 if rotated:
-                    combined += rotated[-1].read_text(errors="replace").splitlines()
+                    combined += _journal_file_lines(rotated[-1])
                 if current:
-                    combined += log_path.read_text(errors="replace").splitlines()
+                    combined += _journal_file_lines(log_path)
                 lines = combined[-n:]
             except Exception as e:
                 error = str(e)
@@ -1719,7 +1745,11 @@ _HISTORY_FILE_RE = re.compile(r"(?P<base>[A-Za-z0-9_-]+)\.log(?:-(?P<day>[0-9]{8
 _HISTORY_TS_RE = re.compile(r"([0-9]{4})-([0-9]{2})-([0-9]{2})[T ]([0-9]{2}:[0-9]{2})")
 _HISTORY_TAIL_LINES = 5000       # lines rendered by default: the end of the file
 _HISTORY_MAX_LINES  = 100_000    # hard cap for "show all"; bigger files: download
-_HISTORY_OPEN_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+# O_NOFOLLOW: never read through a symlink. O_NONBLOCK: opening a FIFO for
+# reading would otherwise block until a writer shows up (it does nothing for a
+# regular file). _log_fd_open then refuses anything that isn't a regular file.
+_HISTORY_OPEN_FLAGS = (os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+                       | getattr(os, "O_NONBLOCK", 0))
 
 
 def _valid_history_day(day: str) -> bool:
@@ -1809,11 +1839,26 @@ def _history_path(name: str) -> Path | None:
     return path
 
 
+def _log_fd_open(path: Path):
+    """Binary file object for a log file in _LOG_DIR, opened with
+    _HISTORY_OPEN_FLAGS. Raises OSError for a symlink (ELOOP), and for anything
+    that turns out not to be a regular file, e.g. a FIFO swapped in after the
+    directory scan."""
+    fd = os.open(path, _HISTORY_OPEN_FLAGS)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(errno.EINVAL, "not a regular file")
+        return os.fdopen(fd, "rb")
+    except BaseException:
+        os.close(fd)
+        raise
+
+
 @contextmanager
 def _history_open(path: Path, compressed: bool):
     """Text reader over a log file (UTF-8, bad bytes replaced; lines split on \\n
     only). A .gz file is decompressed on the fly in memory, nothing on disk."""
-    raw = os.fdopen(os.open(path, _HISTORY_OPEN_FLAGS), "rb")
+    raw = _log_fd_open(path)
     with raw:
         if compressed:
             with gzip.GzipFile(fileobj=raw) as gz, \
@@ -1970,7 +2015,7 @@ def api_logs_history_download(source: str, day: str):
     except _HistoryError as e:
         return PlainTextResponse(e.message, status_code=e.status)
     try:
-        fh = os.fdopen(os.open(path, _HISTORY_OPEN_FLAGS), "rb")
+        fh = _log_fd_open(path)
         size = os.fstat(fh.fileno()).st_size
     except FileNotFoundError:
         return PlainTextResponse("Log file not found.", status_code=404)

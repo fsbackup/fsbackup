@@ -167,7 +167,13 @@ rotated, just after midnight, so it mostly covers the day before. The list's
 - **Path safety:** requests carry only a source key from a fixed allow-list and a
   date (`YYYYMMDD` or `current`). Filenames come from scanning `LOG_DIR`, never
   from the request. Only regular files are listed, files are opened with
-  `O_NOFOLLOW`, and anything else gets 400/404 with no paths in the error.
+  `O_NOFOLLOW` and `O_NONBLOCK` and must still be regular files once open, and
+  anything else gets 400/404 with no paths in the error.
+- **Live tab** reads its files the same way: a symlink, FIFO or other non-regular
+  file in `LOG_DIR` is ignored, as if the file weren't there (the panel then falls
+  back to the journal).
+- **Deep links** (`/logs?tab=history&source=…&date=…`) survive the login redirect:
+  the `next` parameter keeps the query string.
 - **`.gz` files** are decompressed in memory while streaming, with Python's `gzip`.
   Nothing is extracted to disk.
 - **Size limits:** the viewer renders the last 5,000 lines. *Show all* renders up to
