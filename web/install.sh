@@ -50,6 +50,9 @@ done
 # ACL: write access to config dir (targets.yml editor)
 setfacl -m "u:${WEB_USER}:rwx" "$CONF_DIR" 2>/dev/null && \
     ok "${CONF_DIR} write ACL set for ${WEB_USER}"
+# Sticky bit so that write access can't be used to replace root-owned
+# fsbackup.conf (sourced by root-run scripts) — see fs-install.sh / #105
+chmod +t "$CONF_DIR"
 
 # ACL: Prometheus textfile dir
 NODEEXP_DIR="/var/lib/node_exporter/textfile_collector"

@@ -160,7 +160,8 @@ FastAPI + HTMX + Tailwind CDN. `fsbackup-web.service` on `0.0.0.0:8080`.
 ## Git / Deployment
 
 - Working repo: `/home/crash/projects/fsbackup` (owned `crash:crash`)
-- Installed at: `/opt/fsbackup/` (owned `fsbackup:fsbackup`)
+- Installed at: `/opt/fsbackup/` — must **not** be writable by `fsbackup` (it has NOPASSWD sudo on scripts there). Installer sets `root:root`; on `fs` it's `crash:crash` via the rsync deploy — both fine.
+- `/etc/fsbackup` has `u:fsbackup:rwx` (web targets.yml editor) **plus the sticky bit** so fsbackup can't replace root-owned `fsbackup.conf`, which root-run scripts source (#105).
 - Remote: `git@github.com:fsbackup/fsbackup.git`
 - **main is branch-protected** — always branch + PR
 - Deploy: `sudo rsync -a --delete --exclude='.git' --exclude='web/.venv' --exclude='web/.env' --exclude='conf/targets.yml' /home/crash/projects/fsbackup/ /opt/fsbackup/`

@@ -109,7 +109,11 @@ rsync -a --delete \
     --exclude='web/.env' \
     --exclude='conf/targets.yml' \
     "$REPO_DIR/" "$INSTALL_DIR/"
-chown -R "${FSBACKUP_USER}:${FSBACKUP_USER}" "$INSTALL_DIR"
+# Code is root-owned and not writable by fsbackup: fsbackup has NOPASSWD sudo
+# on scripts in this tree (fs-provision.sh, fs-schedule-set.sh), so if it could
+# edit them it could run anything as root (#105).
+chown -R root:root "$INSTALL_DIR"
+chmod -R go-w "$INSTALL_DIR"
 chmod +x "$INSTALL_DIR"/bin/*.sh "$INSTALL_DIR"/utils/*.sh \
          "$INSTALL_DIR"/s3/*.sh 2>/dev/null || true
 ok "Scripts installed"
@@ -136,8 +140,12 @@ else
     ok "${CONF_DIR}/targets.yml already exists"
 fi
 
-# ACL: fsbackup user can write config dir (targets.yml editor in web UI)
+# ACL: fsbackup user can write config dir (targets.yml editor in web UI).
+# Sticky bit: with dir write access fsbackup could otherwise replace the
+# root-owned fsbackup.conf, which root-run scripts source (#105). With +t it
+# can only rename over / delete files it owns (targets.yml).
 setfacl -m "u:${FSBACKUP_USER}:rwx" "$CONF_DIR" 2>/dev/null || true
+chmod +t "$CONF_DIR"
 
 # Prometheus textfile dir
 chgrp nodeexp_txt "$NODEEXP_DIR" 2>/dev/null || true
@@ -183,7 +191,8 @@ fi
 # can auto-provision datasets for newly added targets (dataset creation needs
 # root: Linux ZFS does not honor delegated mounts via zfs allow).
 SUDOERS_PROVISION_FILE="/etc/sudoers.d/fsbackup-provision"
-SUDOERS_PROVISION_LINE="${FSBACKUP_USER} ALL=(root) NOPASSWD: ${INSTALL_DIR}/bin/fs-provision.sh"
+# "" = no arguments allowed; the runner calls it bare (blocks --targets-file).
+SUDOERS_PROVISION_LINE="${FSBACKUP_USER} ALL=(root) NOPASSWD: ${INSTALL_DIR}/bin/fs-provision.sh \"\""
 echo "$SUDOERS_PROVISION_LINE" > "$SUDOERS_PROVISION_FILE"
 chmod 0440 "$SUDOERS_PROVISION_FILE"
 if visudo -c -f "$SUDOERS_PROVISION_FILE" &>/dev/null; then

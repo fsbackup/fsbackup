@@ -69,9 +69,20 @@ while IFS= read -r cls; do
   cls="${cls%$'\r'}"                 # targets.yml has CRLF line endings
   [[ -n "$cls" ]] || continue
 
+  # Runs as root via sudo — class/id become ZFS dataset names, so only accept
+  # the same safe charset the web UI enforces for target IDs.
+  if [[ ! "$cls" =~ ^[A-Za-z0-9._-]+$ || "$cls" == .* ]]; then
+    echo "  WARN  skipping invalid class name: $cls"
+    continue
+  fi
+
   while IFS= read -r id; do
     id="${id%$'\r'}"
     [[ -n "$id" && "$id" != "null" ]] || continue
+    if [[ ! "$id" =~ ^[A-Za-z0-9._-]+$ || "$id" == .* ]]; then
+      echo "  WARN  skipping invalid target id: $id"
+      continue
+    fi
 
     dataset="${ZFS_BASE}/${cls}/${id}"
 
