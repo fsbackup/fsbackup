@@ -192,6 +192,20 @@ else
     warn "sudoers syntax check failed — removing ${SUDOERS_PROVISION_FILE}"
     rm -f "$SUDOERS_PROVISION_FILE"
 fi
+
+# sudoers drop-in: allow fsbackup to run fs-schedule-set.sh as root so the web
+# UI can edit runner schedules (rewrites fsbackup.conf + applies timer drop-ins;
+# the script validates its arguments itself).
+SUDOERS_SCHEDULE_FILE="/etc/sudoers.d/fsbackup-schedule"
+SUDOERS_SCHEDULE_LINE="${FSBACKUP_USER} ALL=(root) NOPASSWD: ${INSTALL_DIR}/bin/fs-schedule-set.sh"
+echo "$SUDOERS_SCHEDULE_LINE" > "$SUDOERS_SCHEDULE_FILE"
+chmod 0440 "$SUDOERS_SCHEDULE_FILE"
+if visudo -c -f "$SUDOERS_SCHEDULE_FILE" &>/dev/null; then
+    ok "sudoers drop-in written: ${SUDOERS_SCHEDULE_FILE}"
+else
+    warn "sudoers syntax check failed — removing ${SUDOERS_SCHEDULE_FILE}"
+    rm -f "$SUDOERS_SCHEDULE_FILE"
+fi
 echo
 
 # ---------------------------------------------------------------------------

@@ -995,6 +995,21 @@ def _s3_bucket_stats() -> dict | None:
         return None
 
 
+# Runner timers — OnCalendar driven by CLASS*_SCHEDULE in fsbackup.conf
+_RUNNER_SCHEDULES = [
+    ("Daily backup — class1",   "fsbackup-runner-daily@class1",   "CLASS1_DAILY_SCHEDULE"),
+    ("Weekly backup — class1",  "fsbackup-runner-weekly@class1",  "CLASS1_WEEKLY_SCHEDULE"),
+    ("Monthly backup — class1", "fsbackup-runner-monthly@class1", "CLASS1_MONTHLY_SCHEDULE"),
+    ("Daily backup — class2",   "fsbackup-runner-daily@class2",   "CLASS2_DAILY_SCHEDULE"),
+    ("Weekly backup — class2",  "fsbackup-runner-weekly@class2",  "CLASS2_WEEKLY_SCHEDULE"),
+    ("Monthly backup — class2", "fsbackup-runner-monthly@class2", "CLASS2_MONTHLY_SCHEDULE"),
+    ("Monthly backup — class3", "fsbackup-runner-monthly@class3", "CLASS3_MONTHLY_SCHEDULE"),
+]
+
+# Same character set fs-schedule-set.sh enforces (it re-validates as root).
+_SCHEDULE_RE = re.compile(r"^[A-Za-z0-9*:,./~ -]{1,64}$")
+
+
 def _load_schedule() -> list[dict]:
     """Build timer schedule from fsbackup.conf (runner timers) and static timer values."""
     conf_vars: dict[str, str] = {}
@@ -1013,17 +1028,7 @@ def _load_schedule() -> list[dict]:
 
     entries: list[dict] = []
 
-    # Runner timers — OnCalendar driven by CLASS*_SCHEDULE in fsbackup.conf
-    runner_map = [
-        ("Daily backup — class1",   "fsbackup-runner-daily@class1",   "CLASS1_DAILY_SCHEDULE"),
-        ("Weekly backup — class1",  "fsbackup-runner-weekly@class1",  "CLASS1_WEEKLY_SCHEDULE"),
-        ("Monthly backup — class1", "fsbackup-runner-monthly@class1", "CLASS1_MONTHLY_SCHEDULE"),
-        ("Daily backup — class2",   "fsbackup-runner-daily@class2",   "CLASS2_DAILY_SCHEDULE"),
-        ("Weekly backup — class2",  "fsbackup-runner-weekly@class2",  "CLASS2_WEEKLY_SCHEDULE"),
-        ("Monthly backup — class2", "fsbackup-runner-monthly@class2", "CLASS2_MONTHLY_SCHEDULE"),
-        ("Monthly backup — class3", "fsbackup-runner-monthly@class3", "CLASS3_MONTHLY_SCHEDULE"),
-    ]
-    for label, unit, conf_key in runner_map:
+    for label, unit, conf_key in _RUNNER_SCHEDULES:
         schedule = conf_vars.get(conf_key, "")
         entries.append({
             "label":    label,
@@ -1031,6 +1036,7 @@ def _load_schedule() -> list[dict]:
             "schedule": schedule if schedule else "(disabled)",
             "enabled":  bool(schedule),
             "source":   "fsbackup.conf",
+            "conf_key": conf_key,
         })
 
     # Fixed timers — schedules defined in systemd unit files
@@ -1052,6 +1058,72 @@ def _load_schedule() -> list[dict]:
         })
 
     return entries
+
+
+def _check_calendar(expr: str) -> tuple[bool, str]:
+    """Validate an OnCalendar expression with systemd-analyze.
+    Returns (ok, detail) — detail is the next elapse on success, else the error."""
+    try:
+        r = subprocess.run(["systemd-analyze", "calendar", expr],
+                           capture_output=True, text=True, timeout=5)
+    except Exception as e:
+        return False, str(e)
+    if r.returncode != 0:
+        return False, (r.stderr.strip() or "invalid OnCalendar expression")
+    for line in r.stdout.splitlines():
+        if line.strip().startswith("Next elapse:"):
+            return True, line.split(":", 1)[1].strip()
+    return True, ""
+
+
+@app.post("/api/config/schedule", response_class=HTMLResponse)
+async def api_config_schedule(
+    request:  Request,
+    conf_key: str = Form(...),
+    schedule: str = Form(...),
+):
+    """Set one runner schedule: fs-schedule-set.sh (via sudo) rewrites
+    fsbackup.conf and runs fs-schedule-apply.sh to update the timer drop-ins."""
+    schedule = " ".join(schedule.split())   # collapse stray whitespace
+    error = ""
+    saved = ""
+    output = ""
+
+    current = {e["conf_key"]: e for e in _load_schedule() if e.get("conf_key")}
+    if conf_key not in current:
+        error = f"Unknown schedule: {conf_key}"
+    elif not current[conf_key]["enabled"]:
+        error = f"{conf_key} is disabled — enable new schedules from the console"
+    elif not _SCHEDULE_RE.match(schedule):
+        error = "Schedule may only contain letters, digits, spaces and * : , . / ~ -"
+    else:
+        ok, detail = _check_calendar(schedule)
+        if not ok:
+            error = f"Not a valid OnCalendar expression: {detail}"
+        else:
+            script = SCRIPTS_DIR / "bin" / "fs-schedule-set.sh"
+            try:
+                r = subprocess.run(["sudo", "-n", str(script), conf_key, schedule],
+                                   capture_output=True, text=True, timeout=30)
+                output = (r.stdout + r.stderr).strip()
+                if r.returncode == 0:
+                    saved = f"{current[conf_key]['label']} → {schedule}"
+                    if detail:
+                        saved += f" (next run {detail})"
+                else:
+                    error = output.splitlines()[-1] if output else f"fs-schedule-set.sh exited {r.returncode}"
+                    if "password is required" in output:
+                        error = "sudo not permitted — add the fsbackup-schedule sudoers drop-in (see fs-install.sh)"
+            except Exception as e:
+                error = str(e)
+
+    return templates.TemplateResponse("partials/schedule_table.html", {
+        "request":  request,
+        "schedule": _load_schedule(),
+        "error":    error,
+        "saved":    saved,
+        "output":   output,
+    })
 
 
 def _disk_info(path: Path) -> dict:
