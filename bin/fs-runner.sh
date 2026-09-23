@@ -318,12 +318,10 @@ chgrp nodeexp_txt "$PROM_TMP" 2>/dev/null || true
 chmod 0644 "$PROM_TMP"
 mv "$PROM_TMP" "$PROM_FILE"
 
-# -----------------------------------------------------------------------------
-# Class exit marker
-# -----------------------------------------------------------------------------
-
-CLASS_EXIT=$([[ "$FAILED" -gt 0 ]] && echo 1 || echo 0)
-{ echo "$CLASS_EXIT" > "${LOG_DIR}/${CLASS}_exit_code"; } 2>/dev/null || true
+# The class result is fsbackup_runner_last_exit_code{class} above. (Up to v2.2
+# it was also written to $LOG_DIR/<class>_exit_code for the v1 promote step;
+# nothing reads that file now, and a root shell writing into LOG_DIR would
+# follow any symlink fsbackup planted there, so it is no longer written.)
 
 event "runner" "fs-runner complete: type=${SNAPSHOT_TYPE} class=${CLASS} total=${TOTAL} ok=${SUCCEEDED} failed=${FAILED} duration=$(( SECONDS - RUN_START ))s${DRY_TAG}"
 
