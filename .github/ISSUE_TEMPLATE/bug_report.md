@@ -28,7 +28,7 @@ What actually happened.
 
 ## Relevant log output
 ```
-# paste output from /var/lib/fsbackup/log/ or `journalctl -u fsbackup-<unit>`
+# paste output from /var/log/fsbackup/<job>.log or `journalctl -u fsbackup-<unit>`
 ```
 
 ## Additional context

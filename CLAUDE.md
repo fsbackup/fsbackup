@@ -8,8 +8,9 @@ ZFS-native rsync snapshot backup system for a home lab. Runs bare-metal on `fs` 
 
 ```
 bin/          Core backup scripts (runner, retention, doctor, provision, install, etc.)
-conf/         Config templates (targets.yml.example, fsbackup.conf.example)
+conf/         Config templates (targets.yml.example, fsbackup.conf.example, logrotate.fsbackup)
 docs/         User-facing documentation
+lib/          Shared shell helpers sourced by bin/ and s3/ scripts (log.sh)
 remote/       Scripts that run ON remote hosts, not the backup server
 s3/           S3 export script
 systemd/      Systemd unit and timer files
@@ -32,7 +33,8 @@ web/          FastAPI + HTMX web UI
 | SSH keys | `/var/lib/fsbackup/.ssh/` (id_ed25519_backup + known_hosts) |
 | Primary snapshots | `/backup/snapshots/` |
 | DB exports | `/backup/exports/` |
-| Logs | `/var/lib/fsbackup/log/` |
+| Logs | `/var/log/fsbackup/` (`LOG_DIR`; fsbackup:fsbackup 0750) |
+| Log rotation | `/etc/logrotate.d/fsbackup` (from `conf/logrotate.fsbackup`) |
 | Node exporter metrics | `/var/lib/node_exporter/textfile_collector/` |
 | Sudoers drop-in | `/etc/sudoers.d/fsbackup-zfs-destroy` |
 
@@ -47,6 +49,7 @@ web/          FastAPI + HTMX web UI
 
 ```bash
 SNAPSHOT_ROOT="/backup/snapshots"   # ZFS dataset root = strip leading /
+LOG_DIR="/var/log/fsbackup"         # log files; default when unset
 CLASS1_DAILY_SCHEDULE="*-*-* 01:49:00"
 CLASS1_WEEKLY_SCHEDULE="Mon *-*-* 02:00:00"
 CLASS1_MONTHLY_SCHEDULE="*-*-01 02:00:00"
@@ -56,7 +59,8 @@ KEEP_MONTHLY=12
 S3_BUCKET="fsbackup-snapshots-SUFFIX"
 ```
 
-Scripts source this with: `. /etc/fsbackup/fsbackup.conf`
+Scripts source this with: `. /etc/fsbackup/fsbackup.conf`, then `LOG_DIR="${LOG_DIR:-/var/log/fsbackup}"`.
+The web UI reads `LOG_DIR` by parsing the file as text (`_resolve_log_dir()` in `web/main.py`; env `FSBACKUP_LOG_DIR` overrides), so it must be a literal path.
 
 ---
 
@@ -112,10 +116,21 @@ Parameterized by class instance (e.g. `@class1`):
 
 ## Logging
 
-Per-class runner logs: `/var/lib/fsbackup/log/backup-<class>.log`
-Other logs in same dir: `retention.log`, `s3-export.log`, `scrub.log`, `fs-orphans.log`
-`scrub.log` is written by a root script into the fsbackup-owned dir, so `fs-scrub-check.sh` writes it through a writer (`mkdir -p` + a non-blocking `dd` append, so a planted FIFO can't hang it) running as fsbackup (`setpriv`). Root never opens or creates a path in that dir (it doesn't call `log_init`), and the file stays fsbackup-owned for logrotate's `copytruncate`. Its `LOG_DIR` default follows `lib/log.sh`: `/var/log/fsbackup` if `/opt/fsbackup/lib/log.sh` (#113) is installed, else `/var/lib/fsbackup/log`.
-Doctor output has no log file — it goes to the journal (`journalctl -u fsbackup-doctor@<class>`); `fs-orphans.log` only records orphan events (all classes).
+All log files live in `LOG_DIR` (default `/var/log/fsbackup/`):
+`backup-<class>.log` (runner, all types), `retention.log`, `s3-export.log`, `doctor-<class>.log`,
+`fs-orphans.log` (orphan events, all classes), `scrub.log` (#114).
+
+| Destination | Content |
+|---|---|
+| journald (stdout/stderr) | Run start/end, one line per target result, final summary, all errors/warnings |
+| `$LOG_DIR/*.log` | Everything above plus detail: rsync stats, snapshot names, provision output, retention keep/destroy, per-object S3 |
+
+The doctor prints its report to stdout (journald) and also writes it to `doctor-<class>.log`.
+Line format everywhere: `<date -Is> [<tag>] <msg>`; errors carry `ERROR `.
+Rotation: `/etc/logrotate.d/fsbackup` — daily, 30 kept, `copytruncate`, `dateext` → `<name>.log-YYYYMMDD`, older ones `.gz`.
+Units set `SyslogIdentifier=fsbackup-<job>` (templated: `fsbackup-runner-<class>`, `fsbackup-doctor-<class>`).
+The fsbackup-user job units have `LogsDirectory=fsbackup` + `LogsDirectoryMode=0750`; never add that to a `User=root` unit (systemd would chown the dir to root).
+The web log viewer (`/api/journal/<unit>`) reads the current file + newest uncompressed rotated file, and falls back to `journalctl -u` when a unit has no file yet.
 
 ---
 
@@ -134,8 +149,11 @@ The `fsbackup` user runs most services. Exceptions:
 ## Coding Conventions
 
 - All scripts: `#!/usr/bin/env bash` + `set -u` + `set -o pipefail` (no `set -e` — errors handled per-iteration)
-- Source config at top: `. /etc/fsbackup/fsbackup.conf`
-- Log with timestamps: `echo "$(date -Is) [$TARGET_ID] message" | tee -a "$LOG_FILE"`
+- Source config at top: `. /etc/fsbackup/fsbackup.conf`, then `LOG_DIR="${LOG_DIR:-/var/log/fsbackup}"`
+- Logging: source `lib/log.sh` (`. "$(dirname "$(readlink -f "$0")")/../lib/log.sh"`), call `log_init <basename>`, then
+  `log <tag> msg` (file only: detail), `event <tag> msg` (file + stdout: start/end, per-target result, summary),
+  `error <tag> msg` (file + stderr, prefixed `ERROR `: errors and warnings), `cmd 2>&1 | log_stream <tag>` (command output to file).
+  Never `>>"$LOG_FILE"` directly — the helpers keep the job running if LOG_DIR is unwritable.
 - Prometheus metrics: write `.prom` files to node exporter textfile dir, then `mv` atomically
 - Prom file permissions: `chgrp nodeexp_txt ... 2>/dev/null || true` + `chmod 0644`
 - AWS CLI calls use `--profile fsbackup`

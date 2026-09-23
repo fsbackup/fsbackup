@@ -164,14 +164,15 @@ the rest are set in the timer unit files.
 | Path | Purpose |
 |---|---|
 | `/opt/fsbackup/` | Installed scripts, configs, systemd units, web UI |
-| `/etc/fsbackup/fsbackup.conf` | Runtime config (roots, schedules, retention, S3) |
+| `/etc/fsbackup/fsbackup.conf` | Runtime config (roots, log dir, schedules, retention, S3) |
 | `/etc/fsbackup/targets.yml` | Target definitions |
 | `/etc/fsbackup/db/<name>.env` | DB export credentials (per database) |
 | `/etc/fsbackup/age.pub` | age public key for S3 encryption |
 | `/var/lib/fsbackup/` | fsbackup user home |
 | `/var/lib/fsbackup/.ssh/id_ed25519_backup` | Private key used to pull from remotes |
 | `/var/lib/fsbackup/.aws/credentials` | AWS credentials (profile `fsbackup`) |
-| `/var/lib/fsbackup/log/` | Log files (per-class runner logs, retention, s3-export, scrub, orphans) |
+| `/var/log/fsbackup/` | Log files (`LOG_DIR`): `backup-<class>.log`, `doctor-<class>.log`, `retention.log`, `s3-export.log`, `fs-orphans.log`, `scrub.log` |
+| `/etc/logrotate.d/fsbackup` | Daily rotation of `/var/log/fsbackup/*.log`, 30 kept (from `conf/logrotate.fsbackup`) |
 | `/backup/snapshots/` | ZFS snapshot root (`SNAPSHOT_ROOT`) |
 | `/var/lib/node_exporter/textfile_collector/` | Prometheus metrics output |
 | `/etc/sudoers.d/fsbackup-zfs-destroy` | NOPASSWD `zfs destroy -r <root>/*/*` (web UI orphan-delete) |

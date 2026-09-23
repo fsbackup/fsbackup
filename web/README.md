@@ -159,6 +159,7 @@ running under systemd, you can use `EnvironmentFile=` in the unit file instead.
 | `PORT` | `8080` | Port to listen on |
 | `SNAPSHOT_ROOT` | `/backup/snapshots` | ZFS snapshot root |
 | `TARGETS_FILE` | `/etc/fsbackup/targets.yml` | targets.yml path |
+| `FSBACKUP_LOG_DIR` | *(unset)* | Log directory for the Logs page. Unset = `LOG_DIR` read from `/etc/fsbackup/fsbackup.conf` (a literal path; the file is parsed, not executed), else `/var/log/fsbackup` |
 | `S3_BUCKET` | `fsbackup-snapshots-SUFFIX` | S3 bucket name |
 | `S3_PROFILE` | `fsbackup` | AWS credentials profile name |
 | `S3_REGION` | `us-west-2` | AWS region |
@@ -241,6 +242,7 @@ this automatically. If you need to understand or redo it manually:
 |------|--------------|------------|
 | `/backup/snapshots` | read + traverse | `fsbackup` group |
 | `/etc/fsbackup/` | read + traverse | `fsbackup` group |
+| `/var/log/fsbackup/` (`LOG_DIR`) | read + traverse | `fsbackup` group (dir is `fsbackup:fsbackup` 0750) |
 | `/var/lib/node_exporter/textfile_collector/` | read | ACL (set by `web/install.sh`) |
 | `/var/lib/fsbackup/.aws/` | read | ACL (set by `web/install.sh`) |
 | systemd journal | read | `systemd-journal` group (set by `web/install.sh`) |
