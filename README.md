@@ -176,6 +176,7 @@ Repository path: **bin/**
 | `fs-doctor.sh` | Health check | Checks SSH connectivity, source paths, and ZFS datasets. Detects orphaned datasets (targets removed from `targets.yml` with remaining datasets). |
 | `fs-retention.sh` | Prune old snapshots | Destroys ZFS snapshots older than the configured KEEP_* limits per class per snapshot type. |
 | `fs-db-export.sh` | Export databases | Dumps databases via `docker exec` to an export directory before backup runs, ensuring a consistent snapshot. Runs as root. |
+| `fs-scrub-check.sh` | Scrub the pool | Monthly via `fsbackup-scrub.timer` (5th, 03:00). Runs `zpool scrub -w` on the backup pool, then fails the unit if the pool or a vdev isn't ONLINE, any error counter is non-zero, the scrub repaired data or found errors, or `zpool status` reports data errors. Writes Prometheus metrics. Runs as root. |
 | `fs-install.sh` | Bare-metal installer | Installs fsbackup to `/opt/fsbackup`, creates the `fsbackup` user, configures ZFS delegation, sudoers drop-in, and systemd units. |
 | `fs-schedule-apply.sh` | Apply schedule | Writes `OnCalendar=` systemd drop-in overrides from `CLASS*_*_SCHEDULE` variables in `fsbackup.conf`. |
 
@@ -350,7 +351,7 @@ All times are approximate; systemd timers use `RandomizedDelaySec` to avoid thun
 | 04:30 | S3 export |
 | 06:00 | Retention |
 
-Weekly and monthly runner instances fire on the configured day/date (Monday for weekly, 1st of month for monthly). class3 runs monthly: doctor at 04:15, runner at 04:45 on the 1st.
+Weekly and monthly runner instances fire on the configured day/date (Monday for weekly, 1st of month for monthly). class3 runs monthly: doctor at 04:15, runner at 04:45 on the 1st. The ZFS scrub check runs monthly on the 5th at 03:00 and takes about an hour on `fs`.
 
 ---
 
@@ -383,6 +384,26 @@ All metrics are written as textfile collector `.prom` files to `/var/lib/node_ex
 |--------|--------|-------------|
 | `fsbackup_orphan_snapshots_total` | — | Count of ZFS datasets belonging to targets no longer in `targets.yml`. Alert if > 0. |
 | `fsbackup_doctor_duration_seconds` | `class` | How long the doctor run took, in seconds |
+
+The doctor also reads the scrub metrics below and prints a "ZFS scrub" line: WARN if the last scrub check failed, if there is no result yet, or if the last clean scrub is older than `SCRUB_MAX_AGE_DAYS` (default 35).
+
+### Scrub metrics (`fs-scrub-check.sh`)
+
+Written to `fsbackup_scrub.prom` after each monthly scrub check.
+
+| Metric | Labels | Description |
+|--------|--------|-------------|
+| `fsbackup_scrub_last_run_seconds` | `pool` | Unix timestamp when the last scrub check finished |
+| `fsbackup_scrub_last_success_seconds` | `pool` | Unix timestamp of the last check that found no problems (kept across failed runs). Alert if older than ~35 days. |
+| `fsbackup_scrub_success` | `pool` | 1 if the last check found no problems, 0 otherwise. Alert if 0. |
+| `fsbackup_scrub_problems` | `pool` | Problems found: pool/vdev state, error counters, repairs, data errors, scrub failure |
+| `fsbackup_scrub_duration_seconds` | `pool` | Duration of the last check, including the scrub |
+| `fsbackup_scrub_scan_errors` | `pool` | Errors on the `zpool status` scan line |
+| `fsbackup_scrub_repaired_bytes` | `pool` | Bytes the scrub repaired (approximate; `zpool status` rounds it) |
+| `fsbackup_scrub_device_errors` | `pool` | Sum of READ/WRITE/CKSUM counters over all vdevs |
+| `fsbackup_scrub_data_errors` | `pool` | Permanent data errors reported by `zpool status` |
+
+Detail metrics that couldn't be read (for example when the pool is missing) are left out rather than written as 0.
 
 ### Retention metrics (`fs-retention.sh`)
 
