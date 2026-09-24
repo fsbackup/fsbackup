@@ -4,6 +4,9 @@ Description=fsbackup logrotate health metric
 [Service]
 UMask=0022
 Type=oneshot
-User=root
+# Only reads fsbackup's own logs and /etc/logrotate.d/fsbackup, and writes
+# fsbackup_logrotate.prom (the textfile dir is writable by fsbackup): no root.
+User=fsbackup
+Group=fsbackup
 ExecStart=/opt/fsbackup/bin/fs-logrotate-metric.sh
 SyslogIdentifier=fsbackup-logrotate-metric

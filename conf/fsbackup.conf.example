@@ -38,6 +38,10 @@ KEEP_WEEKLY=8
 KEEP_MONTHLY=12
 KEEP_ANNUAL=0
 
+# Log rotation check (fs-logrotate-metric.sh, hourly): a non-empty log whose
+# first entry is older than this is reported as not being rotated.
+# LOGROTATE_MAX_AGE_SECONDS=172800
+
 # =============================================================================
 # ZFS scrub — fs-scrub-check.sh (monthly via fsbackup-scrub.timer, as root)
 # Scrubs ZFS_POOL (above; default: the pool holding SNAPSHOT_ROOT) and fails
