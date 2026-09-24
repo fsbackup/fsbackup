@@ -199,7 +199,7 @@ FastAPI + HTMX + Tailwind CDN. `fsbackup-web.service` on `0.0.0.0:8080`.
   (`.claude` holds agent worktrees with other branches' unreviewed code; it must never reach `/opt`.)
 - Verify a deploy: `diff -rq -x .git -x .claude -x .venv -x .env -x targets.yml -x __pycache__ /home/crash/projects/fsbackup /opt/fsbackup`
 - `conf/targets.yml` is gitignored — never commit it
-- Current release: **v2.2.0**
+- Current release: **v2.3.0**
 
 ## Known Issues / Open Work
 
