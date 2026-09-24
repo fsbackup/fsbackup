@@ -341,11 +341,19 @@ echo "fsbackup_runner_run_scope{class=\"${CLASS}\"} ${RUN_SCOPE_FULL}" >>"$PROM_
 # Write atomically
 # -----------------------------------------------------------------------------
 
-chgrp nodeexp_txt "$PROM_TMP" 2>/dev/null || true
-chmod 0644 "$PROM_TMP"
-# -T: rename onto PROM_FILE itself; without it a symlink to a directory planted
-# there would receive the file and the metric would silently not update.
-mv -fT "$PROM_TMP" "$PROM_FILE" || { rm -f "$PROM_TMP"; error "runner" "failed to write ${PROM_FILE}"; }
+# A dry run took no snapshot, so it must not publish metrics: it would report
+# every target as backed up now (last_success, exit 0) and could mask a real
+# failure until the next real run (#123; same as retention's dry run, #102).
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  rm -f "$PROM_TMP"
+  log "runner" "dry-run: metrics not written (${PROM_FILE} unchanged)"
+else
+  chgrp nodeexp_txt "$PROM_TMP" 2>/dev/null || true
+  chmod 0644 "$PROM_TMP"
+  # -T: rename onto PROM_FILE itself; without it a symlink to a directory planted
+  # there would receive the file and the metric would silently not update.
+  mv -fT "$PROM_TMP" "$PROM_FILE" || { rm -f "$PROM_TMP"; error "runner" "failed to write ${PROM_FILE}"; }
+fi
 
 # The class result is fsbackup_runner_last_exit_code{class} above. (Up to v2.2
 # it was also written to $LOG_DIR/<class>_exit_code for the v1 promote step;
