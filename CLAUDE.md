@@ -86,6 +86,7 @@ The web UI reads `LOG_DIR` by parsing the file as text (`_resolve_log_dir()` in 
 | `fs-schedule-apply.sh` | `bin/` | manual + installer (writes systemd OnCalendar= drop-ins) |
 | `fs-schedule-set.sh` | `bin/` | manual + web UI (Configuration > Schedule): set one `CLASS*_SCHEDULE`, then apply |
 | `fs-db-export.sh` | `bin/` | systemd timer (`fs-db-export@<name>.timer`); runs as root |
+| `fs-logrotate-metric.sh` | `bin/` | systemd timer (`fsbackup-logrotate-metric.timer`, hourly); runs as fsbackup. Stale = non-empty log whose first entry is > 2 days old |
 | `fs-scrub-check.sh` | `bin/` | systemd timer (`fsbackup-scrub.timer`); runs as root. `zpool scrub -w`, then fails on any `zpool status` problem |
 | `fs-restore.sh` | `utils/` | manual only |
 | `fs-trust-host.sh` | `utils/` | manual only |
@@ -108,7 +109,7 @@ Parameterized by class instance (e.g. `@class1`):
 | `fsbackup-retention.timer` | Prune old ZFS snapshots |
 | `fsbackup-s3-export.timer` | Encrypt + upload to S3 |
 | `fsbackup-scrub.timer` | Monthly ZFS scrub + health check (`fs-scrub-check.sh`, 5th 03:00) |
-| `fsbackup-logrotate-metric.timer` | Rotate Prometheus .prom files |
+| `fsbackup-logrotate-metric.timer` | Hourly: `fs-logrotate-metric.sh` (as fsbackup) checks log rotation, writes `fsbackup_logrotate.prom` |
 | `fsbackup-web.service` | FastAPI web UI (no timer; persistent) |
 | `fs-db-export@.timer` | DB export; instance = env filename in /etc/fsbackup/db/ |
 

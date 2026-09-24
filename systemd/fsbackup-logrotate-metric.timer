@@ -2,9 +2,10 @@
 Description=fsbackup logrotate metric timer
 
 [Timer]
-OnCalendar=daily
+# Hourly, so the dashboard shows a rotation (logrotate.timer, ~00:00) within
+# the hour and a stale log as soon as it crosses the max age.
+OnCalendar=hourly
 Persistent=true
 
 [Install]
 WantedBy=timers.target
-

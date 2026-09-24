@@ -94,6 +94,12 @@ zless /var/log/fsbackup/backup-class1.log-20260915.gz
 sudo logrotate -d /etc/logrotate.d/fsbackup   # check the rotation config
 ```
 
+`fsbackup-logrotate-metric.timer` checks every hour that rotation is working and feeds the
+dashboard's **Log Rotation** panel (`fsbackup_logrotate_ok`). It flags a log whose first
+line is more than two days old, which means logrotate has stopped rotating it. To run the
+check by hand: `sudo systemctl start fsbackup-logrotate-metric` and
+`journalctl -t fsbackup-logrotate-metric -n 3`.
+
 Each unit sets a `SyslogIdentifier`, so the journal can also be filtered by job:
 `journalctl -t fsbackup-runner-class1` shows every runner type for class1.
 

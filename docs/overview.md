@@ -199,5 +199,16 @@ All scripts write `.prom` files to the node_exporter textfile collector director
 Detail metrics that couldn't be read (for example when the pool is missing) are left out
 rather than written as 0.
 
+**Log rotation metrics** (`fsbackup_logrotate.prom`, written hourly by `fs-logrotate-metric.sh`):
+
+| Metric | Description |
+|--------|-------------|
+| `fsbackup_logrotate_ok` | 1 if the logrotate config is valid and no log is stale, 0 otherwise |
+| `fsbackup_logrotate_last_run_seconds` | Start of the day of the newest rotated log file; 0 if none |
+| `fsbackup_logrotate_config_ok` | 1 if `logrotate -d` accepts `/etc/logrotate.d/fsbackup` and it targets `LOG_DIR/*.log` |
+| `fsbackup_logrotate_stale_logs` | Non-empty logs whose first entry is older than `LOGROTATE_MAX_AGE_SECONDS` (default 2 days) |
+| `fsbackup_logrotate_oldest_entry_age_seconds` | Age of the oldest first entry across non-empty logs |
+| `fsbackup_logrotate_checked_seconds` | When the check last ran |
+
 A Grafana dashboard is included at `conf/grafana-dashboard.json`. The datasource UID in
 that file is instance-specific and must be remapped on import.

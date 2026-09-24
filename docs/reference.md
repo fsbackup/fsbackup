@@ -133,7 +133,7 @@ the rest are set in the timer unit files.
 | ~02:15 | `fsbackup-runner-daily@class2` | Daily rsync + ZFS snapshot — class2 |
 | 04:30 | `fsbackup-s3-export` | Encrypt + upload weekly/monthly to S3 |
 | 06:00 | `fsbackup-retention` | Prune old ZFS snapshots (all classes) |
-| 00:00 | `fsbackup-logrotate-metric` | Rotate Prometheus `.prom` files |
+| hourly | `fsbackup-logrotate-metric` | Check log rotation (`fs-logrotate-metric.sh`), write `fsbackup_logrotate.prom` |
 
 **Weekly (Saturday)**
 

@@ -177,6 +177,7 @@ Repository path: **bin/**
 | `fs-doctor.sh` | Health check | Checks SSH connectivity, source paths, and ZFS datasets. Detects orphaned datasets (targets removed from `targets.yml` with remaining datasets). |
 | `fs-retention.sh` | Prune old snapshots | Destroys ZFS snapshots older than the configured KEEP_* limits per class per snapshot type. |
 | `fs-db-export.sh` | Export databases | Dumps databases via `docker exec` to an export directory before backup runs, ensuring a consistent snapshot. Runs as root. |
+| `fs-logrotate-metric.sh` | Log rotation health | Hourly via `fsbackup-logrotate-metric.timer`, as `fsbackup`. Checks that `/etc/logrotate.d/fsbackup` is valid and that no log in `LOG_DIR` has gone unrotated (first entry older than 2 days); writes `fsbackup_logrotate.prom` for the dashboard's Log Rotation panel. | — |
 | `fs-scrub-check.sh` | Scrub the pool | Monthly via `fsbackup-scrub.timer` (5th, 03:00). Runs `zpool scrub -w` on the backup pool, then fails the unit if the pool or a vdev isn't ONLINE, any error counter is non-zero, the scrub repaired data or found errors, or `zpool status` reports data errors. Writes Prometheus metrics. Runs as root. |
 | `fs-install.sh` | Bare-metal installer | Installs fsbackup to `/opt/fsbackup`, creates the `fsbackup` user, configures ZFS delegation, sudoers drop-in, and systemd units. |
 | `fs-schedule-apply.sh` | Apply schedule | Writes `OnCalendar=` systemd drop-in overrides from `CLASS*_*_SCHEDULE` variables in `fsbackup.conf`. |
@@ -405,6 +406,19 @@ Written to `fsbackup_scrub.prom` after each monthly scrub check.
 | `fsbackup_scrub_data_errors` | `pool` | Permanent data errors reported by `zpool status` |
 
 Detail metrics that couldn't be read (for example when the pool is missing) are left out rather than written as 0.
+
+### Log rotation metrics (`fs-logrotate-metric.sh`)
+
+Written hourly to `fsbackup_logrotate.prom` (runs as `fsbackup`). Logs rotate daily with `copytruncate`, so a non-empty log should only hold about a day of lines; a log whose first entry is older than `LOGROTATE_MAX_AGE_SECONDS` (default 172800 = 2 days) is not being rotated.
+
+| Metric | Labels | Description |
+|--------|--------|-------------|
+| `fsbackup_logrotate_ok` | — | 1 if the config is valid and no log is stale, 0 otherwise. Alert if 0. |
+| `fsbackup_logrotate_last_run_seconds` | — | Start of the day of the newest rotated file (`<name>.log-YYYYMMDD[.gz]`); 0 if none |
+| `fsbackup_logrotate_config_ok` | — | 1 if `logrotate -d` accepts `/etc/logrotate.d/fsbackup` with no errors and it targets `LOG_DIR/*.log` |
+| `fsbackup_logrotate_stale_logs` | — | Non-empty logs whose first entry is older than the max age |
+| `fsbackup_logrotate_oldest_entry_age_seconds` | — | Age of the oldest first entry across non-empty logs (healthy: under ~25h) |
+| `fsbackup_logrotate_checked_seconds` | — | When the check last ran |
 
 ### Retention metrics (`fs-retention.sh`)
 
