@@ -53,6 +53,11 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "$CLASS" ]] || usage
+# --class and --target become file names (backup-<class>.log, the prom file)
+# and are spliced into yq/jq expressions, so only plain name components pass.
+valid_name() { [[ "$1" =~ ^[A-Za-z0-9._-]+$ && "$1" != .* ]]; }
+valid_name "$CLASS" || { echo "fs-runner: invalid --class: $CLASS" >&2; exit 2; }
+[[ -z "$TARGET_FILTER" ]] || valid_name "$TARGET_FILTER" || { echo "fs-runner: invalid --target: $TARGET_FILTER" >&2; exit 2; }
 log_init "backup-${CLASS}"
 
 PROM_FILE="${NODE_TEXTFILE_DIR}/fsbackup_runner_${CLASS}.prom"
@@ -135,24 +140,49 @@ if [[ "$PROVISION_NEEDED" -eq 1 ]]; then
 fi
 
 # -----------------------------------------------------------------------------
-# Load existing failure counters and last_success values
+# Load the previous run's per-target metrics (#121)
 # -----------------------------------------------------------------------------
+# The prom file sits in the node_exporter textfile dir, which fsbackup and the
+# nodeexp_txt group (patchcheck, node_exporter) can write, with no sticky bit,
+# so its contents are untrusted. Before #121 a planted value such as a[$(cmd)]
+# ran cmd when bash evaluated it in $(( )), planted lines were carried into the
+# new file verbatim, and a FIFO in its place blocked the run. Now only a
+# regular, non-symlink file is read (size- and time-limited), and only lines of
+# the exact form
+#   <known per-target metric>{class="<CLASS>",target="<id of this class>"} <number>
+# are kept, re-rendered from the parsed parts. Everything else is dropped.
 
-declare -A FAILURE_COUNTERS
-declare -A PREV_LAST_SUCCESS
+# Every target id of the class, not just --target: a partial run carries the
+# other targets' metrics forward.
+declare -A CLASS_IDS
+while IFS= read -r _id; do
+  _id="${_id%$'\r'}"
+  valid_name "$_id" && CLASS_IDS["$_id"]=1
+done < <(yq eval ".${CLASS}[].id" "$CONFIG_FILE" 2>/dev/null)
 
-if [[ -f "$PROM_FILE" ]]; then
-  while read -r line; do
-    if [[ "$line" =~ fsbackup_runner_target_failures_total ]]; then
-      target=$(echo "$line" | sed -n 's/.*target="\([^"]*\)".*/\1/p')
-      value=$(echo "$line" | awk '{print $NF}')
-      FAILURE_COUNTERS["$target"]="$value"
-    elif [[ "$line" =~ fsbackup_snapshot_last_success ]]; then
-      target=$(echo "$line" | sed -n 's/.*target="\([^"]*\)".*/\1/p')
-      value=$(echo "$line" | awk '{print $NF}')
-      PREV_LAST_SUCCESS["$target"]="$value"
-    fi
-  done < "$PROM_FILE"
+PER_TARGET_METRICS=" fsbackup_snapshot_last_success fsbackup_snapshot_last_failure fsbackup_snapshot_bytes fsbackup_snapshot_files_total fsbackup_snapshot_files_created fsbackup_snapshot_files_deleted fsbackup_snapshot_transferred_bytes fsbackup_runner_target_last_seen fsbackup_runner_target_last_exit_code fsbackup_runner_target_failures_total "
+
+declare -A FAILURE_COUNTERS     # target -> non-negative integer
+declare -A PREV_LAST_SUCCESS    # target -> unix timestamp
+PREV_LINES=()                   # validated per-target lines, re-rendered
+
+if [[ -f "$PROM_FILE" && ! -L "$PROM_FILE" ]]; then
+  prom_re='^(fsbackup_[a-z_]+)\{class="([A-Za-z0-9._-]+)",target="([A-Za-z0-9._-]+)"\} ([0-9]+(\.[0-9]+)?)$'
+  while IFS= read -r line; do
+    [[ "$line" =~ $prom_re ]] || continue
+    metric="${BASH_REMATCH[1]}"; pcls="${BASH_REMATCH[2]}"
+    target="${BASH_REMATCH[3]}"; value="${BASH_REMATCH[4]}"
+    [[ "$pcls" == "$CLASS" && -n "${CLASS_IDS[$target]:-}" ]] || continue
+    [[ "$PER_TARGET_METRICS" == *" ${metric} "* ]] || continue
+    case "$metric" in
+      fsbackup_runner_target_failures_total)
+        [[ "$value" =~ ^[0-9]+$ ]] || continue
+        FAILURE_COUNTERS["$target"]="$value" ;;
+      fsbackup_snapshot_last_success)
+        PREV_LAST_SUCCESS["$target"]="$value" ;;
+    esac
+    PREV_LINES+=("${metric}{class=\"${CLASS}\",target=\"${target}\"} ${value}")
+  done < <(timeout 10 head -c 1048576 -- "$PROM_FILE" 2>/dev/null)
 fi
 
 # -----------------------------------------------------------------------------
@@ -167,17 +197,14 @@ PROM_TMP="$(mktemp)"
 
 # For partial runs, carry forward existing per-target metrics for targets not
 # being re-run so they are not wiped from the prom file.
-if [[ "$RUN_SCOPE_FULL" -eq 0 ]] && [[ -f "$PROM_FILE" ]]; then
-  while IFS= read -r line; do
-    [[ -z "$line" || "$line" == "#"* ]] && continue
-    [[ "$line" =~ ^fsbackup_runner_target_failures_total ]] && continue
-    [[ "$line" =~ ^fsbackup_runner_run_scope ]] && continue
-    [[ "$line" =~ ^fsbackup_runner_success ]] && continue
-    [[ "$line" =~ ^fsbackup_runner_failed ]] && continue
-    [[ "$line" =~ ^fsbackup_runner_last_exit_code\{ ]] && continue
-    [[ "$line" == *"target=\"${TARGET_FILTER}\""* ]] && continue
+# Uses the validated PREV_LINES only (class-level metrics were never carried);
+# failure counters are re-emitted from FAILURE_COUNTERS below.
+if [[ "$RUN_SCOPE_FULL" -eq 0 ]]; then
+  for line in "${PREV_LINES[@]}"; do
+    [[ "$line" == fsbackup_runner_target_failures_total\{* ]] && continue
+    [[ "$line" == *"target=\"${TARGET_FILTER}\"}"* ]] && continue
     echo "$line"
-  done < "$PROM_FILE" >> "$PROM_TMP"
+  done >> "$PROM_TMP"
 fi
 
 for t in "${TARGETS[@]}"; do
@@ -193,7 +220,7 @@ for t in "${TARGETS[@]}"; do
   if [[ ! -d "$DEST" ]]; then
     error "$id" "dataset not found at $DEST — skipping (run fs-provision.sh?)"
     ((FAILED++))
-    FAILURE_COUNTERS["$id"]=$(( ${FAILURE_COUNTERS["$id"]:-0} + 1 ))
+    FAILURE_COUNTERS["$id"]=$(( 10#${FAILURE_COUNTERS["$id"]:-0} + 1 ))
     continue
   fi
 
@@ -271,7 +298,7 @@ EOF
 
   else
     ((FAILED++))
-    FAILURE_COUNTERS["$id"]=$(( ${FAILURE_COUNTERS["$id"]:-0} + 1 ))
+    FAILURE_COUNTERS["$id"]=$(( 10#${FAILURE_COUNTERS["$id"]:-0} + 1 ))
 
     cat >>"$PROM_TMP" <<EOF
 fsbackup_snapshot_last_failure{class="${CLASS}",target="${id}"} ${NOW_EPOCH}
@@ -316,7 +343,9 @@ echo "fsbackup_runner_run_scope{class=\"${CLASS}\"} ${RUN_SCOPE_FULL}" >>"$PROM_
 
 chgrp nodeexp_txt "$PROM_TMP" 2>/dev/null || true
 chmod 0644 "$PROM_TMP"
-mv "$PROM_TMP" "$PROM_FILE"
+# -T: rename onto PROM_FILE itself; without it a symlink to a directory planted
+# there would receive the file and the metric would silently not update.
+mv -fT "$PROM_TMP" "$PROM_FILE" || { rm -f "$PROM_TMP"; error "runner" "failed to write ${PROM_FILE}"; }
 
 # The class result is fsbackup_runner_last_exit_code{class} above. (Up to v2.2
 # it was also written to $LOG_DIR/<class>_exit_code for the v1 promote step;
