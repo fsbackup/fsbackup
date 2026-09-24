@@ -1,0 +1,20 @@
+# fsbackup log rotation — installed to /etc/logrotate.d/fsbackup by fs-install.sh.
+# The path must match LOG_DIR in /etc/fsbackup/fsbackup.conf (fs-install.sh
+# rewrites it when LOG_DIR is not the default). Rotated files are named
+# <name>.log-YYYYMMDD; the newest one stays uncompressed (delaycompress) and
+# older ones become <name>.log-YYYYMMDD.gz. 30 are kept. copytruncate: files
+# are copied, then truncated in place, so a job writing during rotation keeps
+# appending to the same path.
+/var/log/fsbackup/*.log {
+    su fsbackup fsbackup
+    daily
+    rotate 30
+    compress
+    delaycompress
+    missingok
+    notifempty
+    dateext
+    dateformat -%Y%m%d
+    copytruncate
+    create 0640 fsbackup fsbackup
+}

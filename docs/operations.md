@@ -38,36 +38,64 @@ Doctor summary
   OK:    3
   WARN:  0
   FAIL:  0
+
+ZFS scrub
+backup                       OK     last clean scrub 2026-09-05 (18 days ago)
+
+2026-09-23T02:05:03-06:00 [doctor] Doctor complete: class=class2 ok=3 warn=0 fail=0 missing_datasets=0 orphans=0 duration=1.2s
 ```
+
+The same report is written, timestamped, to `/var/log/fsbackup/doctor-<class>.log`,
+so past runs rotate with the other logs.
 
 Any `FAIL` must be resolved before the runner will succeed for that target. A `WARN`
 for a missing dataset clears itself once the target is provisioned (see below).
 
-The report ends with a pool-level **ZFS scrub** line, read from the metrics that
+The **ZFS scrub** line at the end is pool-level, read from the metrics that
 `fs-scrub-check.sh` writes. It warns if the last scrub check failed, or if the last clean
-scrub is more than `SCRUB_MAX_AGE_DAYS` (default 35) days old:
-
-```
-ZFS scrub
-backup                       OK     last clean scrub 2026-10-05 (3 days ago)
-```
-
-This line is informational: it isn't counted in the target summary. See
-[ZFS scrub](#zfs-scrub) below.
+scrub is more than `SCRUB_MAX_AGE_DAYS` (default 35) days old. It is informational: it
+isn't counted in the target summary. See [ZFS scrub](#zfs-scrub) below.
 
 ### Logs
 
-Runner logs are per class; other jobs have their own files under
-`/var/lib/fsbackup/log/`:
+Each job logs to two places:
+
+| Where | What |
+|---|---|
+| **journald** (`journalctl -u <unit>`) | Run start and end, one line per target (ok/failed, duration, bytes), the final summary, and every error or warning |
+| **Log files** in `LOG_DIR` (default `/var/log/fsbackup/`) | All of the above plus the detail: rsync `--stats`, snapshot names, provisioning output, retention keep/destroy decisions, per-object S3 uploads |
+
+Every line has the same format, `<date -Is> [<tag>] <message>`, where the tag is the
+target id or the job name. Errors are prefixed `ERROR`.
 
 ```bash
-tail -f /var/lib/fsbackup/log/backup-class1.log   # runner — class1
-tail -f /var/lib/fsbackup/log/backup-class2.log   # runner — class2
-tail -f /var/lib/fsbackup/log/retention.log       # retention
-tail -f /var/lib/fsbackup/log/s3-export.log       # S3 export
-cat     /var/lib/fsbackup/log/scrub.log           # monthly ZFS scrub (full zpool status)
-cat     /var/lib/fsbackup/log/fs-orphans.log      # doctor orphan scan
+tail -f /var/log/fsbackup/backup-class1.log   # runner — class1 (daily/weekly/monthly)
+tail -f /var/log/fsbackup/backup-class2.log   # runner — class2
+tail -f /var/log/fsbackup/retention.log       # retention
+tail -f /var/log/fsbackup/s3-export.log       # S3 export
+cat     /var/log/fsbackup/doctor-class1.log   # doctor report — class1
+cat     /var/log/fsbackup/fs-orphans.log      # doctor orphan scan (all classes)
+cat     /var/log/fsbackup/scrub.log           # monthly ZFS scrub (full zpool status)
 ```
+
+The directory is `LOG_DIR` in `fsbackup.conf`. It must be owned by `fsbackup:fsbackup`
+(mode 0750); the job units also create `/var/log/fsbackup` with that ownership if it
+is missing (`LogsDirectory=`). If a job can't write its log file it still runs, still
+logs to the journal, and prints one `WARN cannot write …` line. A job that runs as root
+(the ZFS scrub, or a script started with plain `sudo`) writes its log file as `fsbackup`
+(through `setpriv`), so every file in the directory stays `fsbackup`-owned.
+
+logrotate (`/etc/logrotate.d/fsbackup`, from `conf/logrotate.fsbackup`) rotates the
+files daily and keeps 30: `backup-class1.log-20260922` is yesterday's file, and older
+ones are compressed (`backup-class1.log-20260921.gz`). To read an older day:
+
+```bash
+zless /var/log/fsbackup/backup-class1.log-20260915.gz
+sudo logrotate -d /etc/logrotate.d/fsbackup   # check the rotation config
+```
+
+Each unit sets a `SyslogIdentifier`, so the journal can also be filtered by job:
+`journalctl -t fsbackup-runner-class1` shows every runner type for class1.
 
 ### Timer status
 
@@ -115,6 +143,12 @@ sudo -u fsbackup /opt/fsbackup/bin/fs-retention.sh --dry-run
 sudo -u fsbackup /opt/fsbackup/bin/fs-retention.sh
 ```
 
+`--dry-run` prints each snapshot it would destroy (`DRY   zfs destroy <snapshot>`),
+publishes no metrics, and destroys nothing. A real run prints only the start line, the
+summary and any failures; the per-snapshot keep/destroy decisions are in `retention.log`.
+In the web UI, Run > Retention > Preview runs the dry run and shows the same list (up to
+its last 500 lines); `retention.log` always has all of it.
+
 ### Run the S3 export manually
 
 ```bash
@@ -154,11 +188,11 @@ left behind after removing a target.
 ### Detecting orphans
 
 The doctor detects orphans on every run and:
-- appends entries to `/var/lib/fsbackup/log/fs-orphans.log`, and
+- appends entries to `/var/log/fsbackup/fs-orphans.log`, and
 - writes `fsbackup_orphan_snapshots_total` (alert if > 0).
 
 ```bash
-cat /var/lib/fsbackup/log/fs-orphans.log
+cat /var/log/fsbackup/fs-orphans.log
 ```
 
 ### Removing orphans
@@ -209,10 +243,13 @@ Output:
 
 - journald (`journalctl -u fsbackup-scrub`): the start line, one result line for the pool,
   a summary line, and one `ERROR` line per problem
-- `/var/lib/fsbackup/log/scrub.log` (`$LOG_DIR/scrub.log`): the same lines, plus the full
-  `zpool status -p` output. The job runs as root but writes this file as `fsbackup`, so it
-  stays fsbackup-owned. If the log directory is missing and `fsbackup` can't create it,
-  the journal gets one `[log] WARN cannot write …` line and the check still runs.
+- `/var/log/fsbackup/scrub.log` (`$LOG_DIR/scrub.log`): the same lines, plus the full
+  `zpool status -p` output. The job runs as root, but `lib/log.sh` writes this file as
+  `fsbackup` (through `setpriv`), so it stays fsbackup-owned and root never follows a
+  symlink planted in the log directory. The writes never block, so a FIFO planted as
+  `scrub.log` can't hang the check either. If the log directory is missing (`fsbackup` can't
+  create it under `/var/log`), the journal gets one `[log] WARN cannot write …` line and
+  the check still runs.
 - `fsbackup_scrub.prom`: `fsbackup_scrub_success{pool}`,
   `fsbackup_scrub_last_success_seconds{pool}`, `fsbackup_scrub_problems{pool}` and more
   (see [reference.md](reference.md#prometheus-metrics)). Alert on
@@ -226,6 +263,7 @@ cat /var/lib/node_exporter/textfile_collector/fsbackup_scrub.prom
 
 ```bash
 journalctl -u fsbackup-scrub.service -n 50    # which checks failed
+sudo tail -60 /var/log/fsbackup/scrub.log     # the run's full zpool status -p
 sudo zpool status -v backup                   # device states, counters, damaged files (-v needs root)
 ```
 

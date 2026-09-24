@@ -39,7 +39,10 @@ sudo /home/<user>/fsbackup/bin/fs-install.sh
 1. Installs required packages (and AWS CLI v2 / `yq` if missing).
 2. Creates the `fsbackup` system user and group (UID/GID **993**).
 3. Installs the scripts to `/opt/fsbackup` (via `rsync`, owned by `fsbackup`).
-4. Creates the config skeleton in `/etc/fsbackup` from the `.example` files.
+4. Creates the config skeleton in `/etc/fsbackup` from the `.example` files, the
+   log directory (`LOG_DIR`, default `/var/log/fsbackup`, `fsbackup:fsbackup` 0750)
+   and `/etc/logrotate.d/fsbackup`. Logs in the old location used by v2.2 and
+   earlier, `/var/lib/fsbackup/log/`, are moved there and the old directory is removed.
 5. Sets up ZFS delegation (`zfs allow`) and two sudoers drop-ins
    (`fsbackup-zfs-destroy`, `fsbackup-provision`).
 6. Installs and enables the systemd timers.
@@ -116,17 +119,20 @@ If you prefer to install by hand, the steps mirror what `fs-install.sh` does:
 
 2. **Install the scripts**:
    ```bash
-   sudo rsync -a --delete --exclude='.git' --exclude='web/.venv' \
+   sudo rsync -a --delete --exclude='.git' --exclude='.claude' --exclude='web/.venv' \
      --exclude='web/.env' --exclude='conf/targets.yml' \
      /home/<user>/fsbackup/ /opt/fsbackup/
    sudo chown -R fsbackup:fsbackup /opt/fsbackup
    ```
 
-3. **Config**:
+3. **Config, log dir and log rotation**:
    ```bash
    sudo mkdir -p /etc/fsbackup/db
    sudo cp /opt/fsbackup/conf/fsbackup.conf.example /etc/fsbackup/fsbackup.conf
    sudo cp /opt/fsbackup/conf/targets.yml.example   /etc/fsbackup/targets.yml
+   # LOG_DIR in fsbackup.conf (default /var/log/fsbackup)
+   sudo install -d -o fsbackup -g fsbackup -m 0750 /var/log/fsbackup
+   sudo install -m 0644 -o root -g root /opt/fsbackup/conf/logrotate.fsbackup /etc/logrotate.d/fsbackup
    ```
 
 4. **ZFS delegation + sudoers** (dataset = `SNAPSHOT_ROOT` with the leading `/` stripped):
@@ -167,9 +173,10 @@ use the rsync one-liner directly:
 
 ```bash
 cd /home/<user>/fsbackup && git pull --ff-only
-sudo rsync -a --delete --exclude='.git' --exclude='web/.venv' \
+sudo rsync -a --delete --exclude='.git' --exclude='.claude' --exclude='web/.venv' \
   --exclude='web/.env' --exclude='conf/targets.yml' \
   /home/<user>/fsbackup/ /opt/fsbackup/
+# (.claude: Claude Code agent worktrees, never deployed)
 # Restart the web UI if web/ changed; reload systemd if unit files changed:
 sudo systemctl restart fsbackup-web.service
 ```

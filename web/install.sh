@@ -160,6 +160,7 @@ Group=$WEB_USER
 WorkingDirectory=$SCRIPT_DIR
 ExecStart=$VENV/bin/python3 $SCRIPT_DIR/main.py
 EnvironmentFile=$ENV_FILE
+SyslogIdentifier=fsbackup-web
 Restart=on-failure
 RestartSec=5
 

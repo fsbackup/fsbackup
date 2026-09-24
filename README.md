@@ -111,6 +111,7 @@ fsbackup includes a browser-based UI for monitoring backup status, browsing snap
 
 ```
 bin/        Scripts run automatically by systemd timers
+lib/        Shared shell helpers sourced by the scripts (log.sh)
 utils/      Manual-use administrative tools
 remote/     Scripts that run ON source hosts (not the backup server)
 s3/         S3 cloud export

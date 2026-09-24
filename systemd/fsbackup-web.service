@@ -9,6 +9,7 @@ Group=fsbackup
 WorkingDirectory=/opt/fsbackup/web
 ExecStart=/opt/fsbackup/web/.venv/bin/python3 /opt/fsbackup/web/main.py
 EnvironmentFile=/opt/fsbackup/web/.env
+SyslogIdentifier=fsbackup-web
 Restart=on-failure
 RestartSec=5
 

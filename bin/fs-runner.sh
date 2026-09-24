@@ -12,13 +12,18 @@ set -o pipefail
 #   monthly → @monthly-YYYY-MM
 #
 # Retention is managed by fs-retention.sh (custom-named snapshots), not this script.
+#
+# Logging (lib/log.sh): $LOG_DIR/backup-<class>.log gets everything (rsync
+# stats, snapshot names, provisioning output). journald (stdout/stderr) gets the
+# run start, one result line per target, the summary, and errors/warnings.
 # =============================================================================
 
 . /etc/fsbackup/fsbackup.conf
+LOG_DIR="${LOG_DIR:-/var/log/fsbackup}"
+. "$(dirname "$(readlink -f "$0")")/../lib/log.sh" || { echo "fs-runner: cannot load lib/log.sh" >&2; exit 2; }
 
 CONFIG_FILE="/etc/fsbackup/targets.yml"
-LOG_DIR="/var/lib/fsbackup/log"
-# LOG_FILE is set after --class is parsed (backup-<class>.log)
+# LOG_FILE is set by log_init after --class is parsed (backup-<class>.log)
 NODE_TEXTFILE_DIR="/var/lib/node_exporter/textfile_collector"
 
 BACKUP_SSH_USER="backup"
@@ -48,18 +53,15 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "$CLASS" ]] || usage
-mkdir -p "$LOG_DIR"
-LOG_FILE="${LOG_DIR}/backup-${CLASS}.log"
+log_init "backup-${CLASS}"
 
 PROM_FILE="${NODE_TEXTFILE_DIR}/fsbackup_runner_${CLASS}.prom"
 NOW_EPOCH="$(date +%s)"
 RUN_SCOPE_FULL=1
 [[ -n "$TARGET_FILTER" ]] && RUN_SCOPE_FULL=0
 
-log() {
-  local id="$1"; shift
-  echo "$(date -Is) [$id] $*" | tee -a "$LOG_FILE"
-}
+# Max rsync stderr lines per target sent to journald; the rest go to the file.
+RSYNC_ERR_JOURNAL_MAX=10
 
 is_local_host() {
   local h="$1"
@@ -91,7 +93,7 @@ else
 fi
 
 [[ "${#TARGETS[@]}" -eq 0 ]] && {
-  echo "No targets found."
+  error "runner" "No targets found (class=${CLASS} target=${TARGET_FILTER:-<all>})"
   exit 2
 }
 
@@ -104,12 +106,10 @@ esac
 
 SNAP_SUFFIX="${SNAPSHOT_TYPE}-${DATE_STR}"
 
-echo "$(date -Is) fs-runner starting"
-echo "  Snapshot type: $SNAPSHOT_TYPE"
-echo "  Class:         $CLASS"
-echo "  Target filter: ${TARGET_FILTER:-<none>}"
-echo "  Snap suffix:   @${SNAP_SUFFIX}"
-echo
+RUN_START=$SECONDS
+DRY_TAG=""
+[[ "$DRY_RUN" -eq 1 ]] && DRY_TAG=" (dry-run)"
+event "runner" "fs-runner starting: type=${SNAPSHOT_TYPE} class=${CLASS} target=${TARGET_FILTER:-<all>} snap=@${SNAP_SUFFIX}${DRY_TAG}"
 
 # -----------------------------------------------------------------------------
 # Auto-provision missing datasets
@@ -127,10 +127,10 @@ done
 if [[ "$PROVISION_NEEDED" -eq 1 ]]; then
   if [[ "$DRY_RUN" -eq 1 ]]; then
     log "provision" "dry-run: missing dataset(s) detected — would run fs-provision.sh"
-  elif sudo -n /opt/fsbackup/bin/fs-provision.sh >>"$LOG_FILE" 2>&1; then
+  elif sudo -n /opt/fsbackup/bin/fs-provision.sh 2>&1 | log_stream "provision"; then
     log "provision" "missing dataset(s) detected — fs-provision.sh completed"
   else
-    log "provision" "WARN: fs-provision.sh failed — missing datasets will be skipped (check sudoers drop-in)"
+    error "provision" "fs-provision.sh failed — missing datasets will be skipped (check sudoers drop-in)"
   fi
 fi
 
@@ -191,31 +191,46 @@ for t in "${TARGETS[@]}"; do
   DEST="${SNAPSHOT_ROOT}/${CLASS}/${id}"
 
   if [[ ! -d "$DEST" ]]; then
-    log "$id" "WARN: dataset not found at $DEST — skipping (run fs-provision.sh?)"
+    error "$id" "dataset not found at $DEST — skipping (run fs-provision.sh?)"
     ((FAILED++))
     FAILURE_COUNTERS["$id"]=$(( ${FAILURE_COUNTERS["$id"]:-0} + 1 ))
     continue
   fi
 
   log "$id" "Starting snapshot"
+  T_START=$SECONDS
 
   RSYNC_CMD=(rsync -a --delete --stats)
   [[ "$DRY_RUN" -eq 1 ]] && RSYNC_CMD+=(-n)
   [[ -n "$rsync_opts" ]] && RSYNC_CMD+=($rsync_opts)
 
+  # rsync output (--stats) goes to the log file only; stderr is reported below.
   RSYNC_STATS_TMP="$(mktemp)"
   RSYNC_ERR_TMP="$(mktemp)"
   if is_local_host "$host"; then
-    "${RSYNC_CMD[@]}" "${src%/}/" "$DEST/" 2>"$RSYNC_ERR_TMP" | tee "$RSYNC_STATS_TMP"
+    "${RSYNC_CMD[@]}" "${src%/}/" "$DEST/" 2>"$RSYNC_ERR_TMP" >"$RSYNC_STATS_TMP"
   else
-    "${RSYNC_CMD[@]}" "${BACKUP_SSH_USER}@${host}:${src%/}/" "$DEST/" 2>"$RSYNC_ERR_TMP" | tee "$RSYNC_STATS_TMP"
+    "${RSYNC_CMD[@]}" "${BACKUP_SSH_USER}@${host}:${src%/}/" "$DEST/" 2>"$RSYNC_ERR_TMP" >"$RSYNC_STATS_TMP"
   fi
-  rc=${PIPESTATUS[0]}
+  rc=$?
+  T_DUR=$(( SECONDS - T_START ))
 
+  log_stream "$id" <"$RSYNC_STATS_TMP"
+
+  # rsync errors/warnings: the first few also go to journald, all to the file.
   if [[ -s "$RSYNC_ERR_TMP" ]]; then
+    n_err=0
     while IFS= read -r errline; do
-      log "$id" "rsync: $errline"
+      n_err=$((n_err + 1))
+      if [[ "$n_err" -le "$RSYNC_ERR_JOURNAL_MAX" ]]; then
+        error "$id" "rsync: $errline"
+      else
+        log "$id" "rsync: $errline"
+      fi
     done < "$RSYNC_ERR_TMP"
+    if [[ "$n_err" -gt "$RSYNC_ERR_JOURNAL_MAX" ]]; then
+      error "$id" "rsync: $(( n_err - RSYNC_ERR_JOURNAL_MAX )) more rsync error line(s) in ${LOG_FILE}"
+    fi
   fi
   rm -f "$RSYNC_ERR_TMP"
 
@@ -231,10 +246,10 @@ for t in "${TARGETS[@]}"; do
     # Take ZFS snapshot after successful rsync
     SNAP_NAME="${ZFS_DATASET}/${CLASS}/${id}@${SNAP_SUFFIX}"
     if [[ "$DRY_RUN" -eq 0 ]]; then
-      if zfs snapshot "$SNAP_NAME" 2>/dev/null; then
+      if zfs_err="$(zfs snapshot "$SNAP_NAME" 2>&1)"; then
         log "$id" "ZFS snapshot: @${SNAP_SUFFIX}"
       else
-        log "$id" "WARN: ZFS snapshot failed or already exists: @${SNAP_SUFFIX}"
+        error "$id" "ZFS snapshot failed or already exists: @${SNAP_SUFFIX}${zfs_err:+ (${zfs_err//$'\n'/ })}"
       fi
     else
       log "$id" "dry-run: would create ZFS snapshot @${SNAP_SUFFIX}"
@@ -252,7 +267,7 @@ fsbackup_runner_target_last_exit_code{class="${CLASS}",target="${id}"} 0
 EOF
 
     FAILURE_COUNTERS["$id"]="${FAILURE_COUNTERS["$id"]:-0}"
-    log "$id" "Snapshot complete (exit 0)"
+    event "$id" "Snapshot complete (exit 0) duration=${T_DUR}s transferred=${STAT_TRANSFERRED} size=${SNAP_BYTES}${DRY_TAG}"
 
   else
     ((FAILED++))
@@ -266,7 +281,7 @@ EOF
     if [[ -n "${PREV_LAST_SUCCESS[$id]:-}" ]]; then
       echo "fsbackup_snapshot_last_success{class=\"${CLASS}\",target=\"${id}\"} ${PREV_LAST_SUCCESS[$id]}" >>"$PROM_TMP"
     fi
-    log "$id" "Snapshot FAILED (exit ${rc})"
+    error "$id" "Snapshot FAILED (exit ${rc}) duration=${T_DUR}s${DRY_TAG}"
   fi
 
   rm -f "$RSYNC_STATS_TMP"
@@ -303,11 +318,11 @@ chgrp nodeexp_txt "$PROM_TMP" 2>/dev/null || true
 chmod 0644 "$PROM_TMP"
 mv "$PROM_TMP" "$PROM_FILE"
 
-# -----------------------------------------------------------------------------
-# Class exit marker
-# -----------------------------------------------------------------------------
+# The class result is fsbackup_runner_last_exit_code{class} above. (Up to v2.2
+# it was also written to $LOG_DIR/<class>_exit_code for the v1 promote step;
+# nothing reads that file now, and a root shell writing into LOG_DIR would
+# follow any symlink fsbackup planted there, so it is no longer written.)
 
-CLASS_EXIT=$([[ "$FAILED" -gt 0 ]] && echo 1 || echo 0)
-echo "$CLASS_EXIT" > "${LOG_DIR}/${CLASS}_exit_code"
+event "runner" "fs-runner complete: type=${SNAPSHOT_TYPE} class=${CLASS} total=${TOTAL} ok=${SUCCEEDED} failed=${FAILED} duration=$(( SECONDS - RUN_START ))s${DRY_TAG}"
 
 exit 0

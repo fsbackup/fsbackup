@@ -256,79 +256,20 @@ export LC_ALL=C   # scrub_parse_status matches zpool's English wording
 
 . /etc/fsbackup/fsbackup.conf
 
-# --- logging -----------------------------------------------------------------
-# Same contract as lib/log.sh (#113):
-#   log   <tag> <msg...>   file only
-#   event <tag> <msg...>   file + stdout (journald)
-#   error <tag> <msg...>   file + stderr (journald), prefixed "ERROR "
-# If lib/log.sh is installed next to bin/ (#113 and later), use it and its
-# /var/log/fsbackup default. Otherwise use a local copy with the pre-#113
-# default, /var/lib/fsbackup/log. Keying the default on the library means the
-# script follows #113's log move whether it is deployed before or after #113,
-# and a merge of the two branches needs no edit here.
-# log_init is deliberately not called: it would create LOG_DIR and open
-# scrub.log as root. The fsbackup writer below does both instead.
-LOG_LIB="$(dirname "$(readlink -f "$0")")/../lib/log.sh"
-if [[ -r "$LOG_LIB" ]]; then
-  LOG_DIR="${LOG_DIR:-/var/log/fsbackup}"
-  . "$LOG_LIB"
-else
-  LOG_DIR="${LOG_DIR:-/var/lib/fsbackup/log}"
-  log()   { local tag="$1"; shift; echo "$(date -Is) [$tag] $*" >>"$LOG_FILE"; }
-  event() { local tag="$1"; shift; echo "$(date -Is) [$tag] $*" | tee -a "$LOG_FILE"; }
-  error() { local tag="$1"; shift; echo "$(date -Is) [$tag] ERROR $*" | tee -a "$LOG_FILE" >&2; }
-fi
-LOG_FILE="$LOG_DIR/scrub.log"
-# --- end logging -------------------------------------------------------------
+LOG_DIR="${LOG_DIR:-/var/log/fsbackup}"
+. "$(dirname "$(readlink -f "$0")")/../lib/log.sh" || { echo "fs-scrub-check: cannot load lib/log.sh" >&2; exit 2; }
+# This script runs as root, but LOG_DIR belongs to fsbackup, so fsbackup could
+# plant a symlink there (scrub.log -> /etc/shadow). lib/log.sh sees EUID 0 and
+# does every file write, and log_init's mkdir, as fsbackup via setpriv: root
+# never opens or creates a path in LOG_DIR, and scrub.log stays fsbackup-owned
+# for logrotate (su fsbackup, copytruncate). Those writes never block, so a
+# FIFO planted at scrub.log can't hang the check either. Don't open, create
+# or chown anything in LOG_DIR here; use log/event/error/log_stream only. If
+# LOG_DIR is missing (fsbackup can't create it under /var/log) the check
+# still runs, the journal gets one "[log] WARN cannot write ..." line, and
+# file lines are lost.
+log_init scrub
 
-# This script runs as root, but $LOG_DIR belongs to fsbackup. If root opened or
-# created a path in there, it would follow any symlink fsbackup had planted, so
-# fsbackup could make root create or append to any file. A root-owned
-# scrub.log, or a LOG_DIR recreated by root after #113's migration removed the
-# old one, would also lock fsbackup out: logrotate runs as fsbackup and
-# copytruncate has to truncate the file. So one writer process, running as
-# fsbackup, creates LOG_DIR if fsbackup is allowed to (it can't under
-# /var/log, where the installer creates it) and appends everything to
-# scrub.log; LOG_FILE points at the pipe to it. If the file can't be opened,
-# the writer prints one warning to journald and drops the file lines; event
-# and error lines still reach journald directly. It starts before the lock is
-# taken so it doesn't inherit the lock fd.
-# The writer appends with dd and O_NONBLOCK, not tee or a shell >>: fsbackup
-# could also plant a FIFO at scrub.log, and a normal open of a FIFO for writing
-# blocks until something reads it. finish() waits for the writer, so the unit
-# would then never end. With O_NONBLOCK that open fails at once (ENXIO), and a
-# FIFO whose reader stops reading fails the write (EAGAIN) instead of blocking.
-# O_NONBLOCK changes nothing for a regular file. bs= makes dd write each line
-# as soon as it arrives instead of filling a block first.
-LOG_WRITER_SH='mkdir -p -- "$1" 2>/dev/null
-if dd of="$2" oflag=append,nonblock conv=notrunc status=none </dev/null 2>/dev/null; then
-  exec dd bs=65536 of="$2" oflag=append,nonblock conv=notrunc status=none
-fi
-echo "$(date -Is) [log] WARN cannot write $2 as fsbackup; detail lines from this run are not being saved (LOG_DIR must exist and be owned by fsbackup)" >&2
-exec cat >/dev/null'
-LOG_WRITER_PID=""
-if id -u fsbackup >/dev/null 2>&1 && command -v setpriv >/dev/null 2>&1; then
-  exec 3> >(exec setpriv --reuid=fsbackup --regid=fsbackup --clear-groups -- \
-              sh -c "$LOG_WRITER_SH" fs-scrub-log "$LOG_DIR" "$LOG_FILE")
-  LOG_WRITER_PID=$!
-  LOG_FILE=/dev/fd/3
-else
-  # No fsbackup user to write as (not a normal fsbackup install): root writes
-  # the file itself.
-  mkdir -p "$LOG_DIR" 2>/dev/null || true
-fi
-# If the writer dies, writes to it should fail quietly, not kill the run with SIGPIPE.
-trap '' PIPE
-
-finish() {
-  # Close the pipe and wait for the writer, so the last lines reach the file before
-  # systemd cleans up the unit's cgroup.
-  if [[ -n "$LOG_WRITER_PID" ]]; then
-    exec 3>&-
-    wait "$LOG_WRITER_PID" 2>/dev/null
-  fi
-}
-trap finish EXIT
 trap 'error scrub "interrupted by signal; a running scrub continues in the kernel (zpool status)"; exit 1' INT TERM
 
 NODEEXP_DIR="/var/lib/node_exporter/textfile_collector"
@@ -401,7 +342,7 @@ else
   # Full status to the file only
   status_txt="$(zpool status -p "$POOL" 2>&1)"
   log "$POOL" "zpool status -p ${POOL}:"
-  while IFS= read -r line; do log "$POOL" "  ${line}"; done <<<"$status_txt"
+  printf '%s\n' "$status_txt" | sed 's/^/  /' | log_stream "$POOL"
 
   while IFS= read -r kv; do
     [[ -n "$kv" ]] || continue

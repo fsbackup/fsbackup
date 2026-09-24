@@ -18,7 +18,8 @@ REPO_DIR="$(dirname "$SCRIPT_DIR")"
 INSTALL_DIR="/opt/fsbackup"
 CONF_DIR="/etc/fsbackup"
 STATE_DIR="/var/lib/fsbackup"
-LOG_DIR="${STATE_DIR}/log"
+# Pre-#113 log location; migrated to LOG_DIR (from fsbackup.conf) in step 4.
+OLD_LOG_DIR="${STATE_DIR}/log"
 NODEEXP_DIR="/var/lib/node_exporter/textfile_collector"
 FSBACKUP_USER="fsbackup"
 FSBACKUP_UID=993
@@ -31,7 +32,7 @@ echo "This script will:"
 echo "  1. Install required packages"
 echo "  2. Create the fsbackup system user (UID ${FSBACKUP_UID})"
 echo "  3. Install scripts to ${INSTALL_DIR}"
-echo "  4. Create config skeleton in ${CONF_DIR}"
+echo "  4. Create config skeleton in ${CONF_DIR}, the log dir, and log rotation"
 echo "  5. Set up ZFS delegation (zfs allow) and sudoers drop-in"
 echo "  6. Install and enable systemd units"
 echo "  7. Apply schedule from fsbackup.conf"
@@ -103,8 +104,10 @@ echo
 # 3. Install scripts
 # ---------------------------------------------------------------------------
 info "Installing to ${INSTALL_DIR}..."
+# .claude: agent worktrees (other branches' unreviewed code) never go to /opt.
 rsync -a --delete \
     --exclude='.git' \
+    --exclude='.claude' \
     --exclude='web/.venv' \
     --exclude='web/.env' \
     --exclude='conf/targets.yml' \
@@ -123,7 +126,7 @@ echo
 # 4. Config skeleton
 # ---------------------------------------------------------------------------
 info "Setting up ${CONF_DIR}..."
-mkdir -p "$CONF_DIR" "$LOG_DIR" "$STATE_DIR/.ssh" "$STATE_DIR/.aws" "$NODEEXP_DIR"
+mkdir -p "$CONF_DIR" "$STATE_DIR/.ssh" "$STATE_DIR/.aws" "$NODEEXP_DIR"
 chown -R "${FSBACKUP_USER}:${FSBACKUP_USER}" "$STATE_DIR"
 
 if [[ ! -f "${CONF_DIR}/fsbackup.conf" ]]; then
@@ -152,6 +155,48 @@ chgrp nodeexp_txt "$NODEEXP_DIR" 2>/dev/null || true
 chmod 0775 "$NODEEXP_DIR" 2>/dev/null || true
 setfacl -m "u:${FSBACKUP_USER}:rwx" "$NODEEXP_DIR" 2>/dev/null || true
 ok "Config skeleton ready"
+
+# Log dir: LOG_DIR from fsbackup.conf (default /var/log/fsbackup), owned by
+# fsbackup, 0750. The web UI (fsbackup group) reads it.
+LOG_DIR="$(LOG_DIR=""; . "${CONF_DIR}/fsbackup.conf" >/dev/null 2>&1; echo "${LOG_DIR:-/var/log/fsbackup}")"
+LOG_DIR="${LOG_DIR%/}"
+[[ "$LOG_DIR" =~ ^/[A-Za-z0-9._/-]+$ && "$LOG_DIR" != *..* ]] || \
+    die "LOG_DIR='${LOG_DIR}' in ${CONF_DIR}/fsbackup.conf must be an absolute path of [A-Za-z0-9._/-]"
+case "$LOG_DIR" in
+    /var|/var/log|/var/lib|/etc|/opt|/tmp|/home|/root|/usr|/srv|"$STATE_DIR")
+        die "LOG_DIR='${LOG_DIR}' must be a dedicated directory (e.g. /var/log/fsbackup), not ${LOG_DIR} itself" ;;
+esac
+install -d -o "$FSBACKUP_USER" -g "$FSBACKUP_USER" -m 0750 "$LOG_DIR" || die "cannot create ${LOG_DIR}"
+ok "Log dir: ${LOG_DIR}"
+
+# Migrate logs from the pre-#113 location: move everything (current, rotated,
+# .gz, exit markers), then remove the old dir. No symlink is left behind.
+# Idempotent; a file that already exists in LOG_DIR is never overwritten.
+if [[ -d "$OLD_LOG_DIR" && ! -L "$OLD_LOG_DIR" && "$OLD_LOG_DIR" != "$LOG_DIR" ]]; then
+    find "$OLD_LOG_DIR" -mindepth 1 -maxdepth 1 -exec mv -n -t "$LOG_DIR" -- {} +
+    if rmdir "$OLD_LOG_DIR" 2>/dev/null; then
+        ok "Moved logs from ${OLD_LOG_DIR} to ${LOG_DIR}"
+    else
+        warn "${OLD_LOG_DIR} not removed — these already exist in ${LOG_DIR}, merge them by hand:"
+        ls -la "$OLD_LOG_DIR" >&2
+    fi
+fi
+
+# Log rotation (/etc/logrotate.d/fsbackup), pointed at LOG_DIR.
+# Staged outside /etc/logrotate.d so logrotate never reads a partial copy.
+LOGROTATE_CONF="/etc/logrotate.d/fsbackup"
+LOGROTATE_TMP="$(mktemp)"
+sed "s#^/var/log/fsbackup/\*\.log #${LOG_DIR}/*.log #" \
+    "$INSTALL_DIR/conf/logrotate.fsbackup" > "$LOGROTATE_TMP"
+grep -qF "${LOG_DIR}/*.log {" "$LOGROTATE_TMP" || \
+    warn "conf/logrotate.fsbackup has no '/var/log/fsbackup/*.log {' line — check ${LOGROTATE_CONF} by hand"
+install -m 0644 -o root -g root "$LOGROTATE_TMP" "$LOGROTATE_CONF"
+rm -f "$LOGROTATE_TMP"
+if logrotate -d "$LOGROTATE_CONF" >/dev/null 2>&1; then
+    ok "Log rotation installed: ${LOGROTATE_CONF}"
+else
+    warn "logrotate -d ${LOGROTATE_CONF} reported errors — check with: sudo logrotate -d ${LOGROTATE_CONF}"
+fi
 echo
 
 # ---------------------------------------------------------------------------

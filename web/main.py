@@ -35,6 +35,55 @@ SNAPSHOT_ROOT = Path(os.environ.get("SNAPSHOT_ROOT", "/backup/snapshots"))
 TARGETS_FILE  = Path(os.environ.get("TARGETS_FILE",  "/etc/fsbackup/targets.yml"))
 SCRIPTS_DIR   = Path(os.environ.get("SCRIPTS_DIR",   "/opt/fsbackup"))
 PROM_DIR      = Path(os.environ.get("PROM_DIR",      "/var/lib/node_exporter/textfile_collector"))
+FSBACKUP_CONF = Path("/etc/fsbackup/fsbackup.conf")
+_DEFAULT_LOG_DIR = "/var/log/fsbackup"
+
+
+def _conf_value(conf_path: Path, key: str) -> str | None:
+    """Return the last `KEY=value` / `KEY="value"` assignment of key in a
+    shell-style conf file, or None. The file is parsed as text, never executed:
+    comments and blank lines are skipped, an `export ` prefix is allowed, and a
+    trailing `# comment` after the value is dropped."""
+    value = None
+    try:
+        text = conf_path.read_text(errors="replace")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("export "):
+            line = line[len("export "):].lstrip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        if k.strip() != key:
+            continue
+        v = v.strip()
+        if v[:1] in ('"', "'") and v[0] in v[1:]:
+            v = v[1:v.index(v[0], 1)]          # quoted: up to the closing quote
+        else:
+            v = v.split("#", 1)[0].strip()     # unquoted: drop a trailing comment
+        value = v
+    return value
+
+
+def _resolve_log_dir(conf_path: Path = FSBACKUP_CONF) -> Path:
+    """Directory the job scripts write their logs to (#113), resolved once:
+    1. env FSBACKUP_LOG_DIR, if set;
+    2. LOG_DIR from fsbackup.conf (text parse, see _conf_value) if it is a
+       literal absolute path — a value using $VAR or `cmd` can't be resolved
+       without running the file, so it falls through;
+    3. /var/log/fsbackup, the scripts' own default."""
+    env = os.environ.get("FSBACKUP_LOG_DIR", "").strip()
+    if env:
+        return Path(env)
+    val = _conf_value(conf_path, "LOG_DIR")
+    if val and val.startswith("/") and not any(c in val for c in "$`"):
+        return Path(val)
+    return Path(_DEFAULT_LOG_DIR)
+
+
+_LOG_DIR = _resolve_log_dir()
 
 # Retention policy (days) per tier — used to compute expiration dates
 RETENTION = {
@@ -384,6 +433,13 @@ def _build_job_commands() -> dict[str, list[str]]:
 
 # Run-page system job keys (subset of _JOB_COMMANDS with no class)
 _SYSTEM_JOBS = ["retention-dryrun", "retention", "s3-export"]
+
+# Output lines kept per Run-page job (the scrollable tail under its button).
+# The retention preview keeps more: its output is the list of snapshots that
+# would be pruned, one "DRY   zfs destroy <snapshot>" line each, and that list
+# is the point of the preview. retention.log always has the full list.
+_JOB_TAIL_LINES = 20
+_JOB_TAIL_LINES_FOR = {"retention-dryrun": 500}
 
 _JOB_COMMANDS = _build_job_commands()
 _jobs: dict[str, dict] = {}
@@ -886,16 +942,18 @@ async def api_orphans_delete(
 # Logs page
 # ---------------------------------------------------------------------------
 
-# Log sections shown on /logs — (unit_key, label, log_filename)
+# Log sections shown on /logs — (unit_key, label, log_filename in _LOG_DIR).
+# /api/journal/<unit_key> reads the file (see _unit_log_file) and falls back to
+# journalctl for a real unit whose file doesn't exist yet.
 _LOG_SECTIONS = [
     ("fsbackup-runner-daily@class1.service",   "Backup — class1",   "backup-class1.log"),
     ("fsbackup-runner-daily@class2.service",   "Backup — class2",   "backup-class2.log"),
     ("fsbackup-runner-daily@class3.service",   "Backup — class3",   "backup-class3.log"),
     ("fsbackup-s3-export.service",             "S3 export",         "s3-export.log"),
     ("fsbackup-retention.service",             "Retention",         "retention.log"),
-    ("fsbackup-doctor@class1.service",         "Doctor — class1",   "journal"),
-    ("fsbackup-doctor@class2.service",         "Doctor — class2",   "journal"),
-    ("fsbackup-doctor@class3.service",         "Doctor — class3",   "journal"),
+    ("fsbackup-doctor@class1.service",         "Doctor — class1",   "doctor-class1.log"),
+    ("fsbackup-doctor@class2.service",         "Doctor — class2",   "doctor-class2.log"),
+    ("fsbackup-doctor@class3.service",         "Doctor — class3",   "doctor-class3.log"),
     ("fsbackup-scrub.service",                 "ZFS scrub",         "scrub.log"),
     ("fs-orphans",                             "Orphans",           "fs-orphans.log"),
 ]
@@ -1496,13 +1554,11 @@ async def api_browse(request: Request, path: str = ""):
     })
 
 
-_LOG_DIR = Path("/var/lib/fsbackup/log")
-
-# Map unit name prefixes/patterns to their log files (most specific first).
-# Runner units are per-class: fsbackup-runner-{type}@{class}.service → backup-{class}.log
-# Doctor units have no log file — the report goes to stdout, so they fall through
-# to journalctl. fs-orphans.log only records orphan events (all classes) and is
-# exposed under the pseudo-unit "fs-orphans".
+# Map unit name prefixes/patterns to their log files in _LOG_DIR (#113).
+# Per-class units: fsbackup-runner-{type}@{class}.service → backup-{class}.log,
+# fsbackup-doctor@{class}.service → doctor-{class}.log (the doctor also prints its
+# report to the journal). fs-orphans.log records orphan events for all classes and
+# is exposed under the pseudo-unit "fs-orphans".
 _UNIT_LOG_MAP = [
     ("fsbackup-s3-export",   _LOG_DIR / "s3-export.log"),
     ("fsbackup-retention",   _LOG_DIR / "retention.log"),
@@ -1511,39 +1567,60 @@ _UNIT_LOG_MAP = [
 ]
 
 def _unit_log_file(unit: str) -> Path | None:
-    # Per-class runner log: fsbackup-runner-{daily|weekly|monthly}@class{N}.service
-    if unit.startswith("fsbackup-runner-"):
-        for cls in CLASSES:
-            if f"@{cls}" in unit:
-                return _LOG_DIR / f"backup-{cls}.log"
+    # Per-class logs: fsbackup-runner-{daily|weekly|monthly}@class{N}.service
+    # and fsbackup-doctor@class{N}.service
+    for prefix, stem in (("fsbackup-runner-", "backup"), ("fsbackup-doctor@", "doctor")):
+        if unit.startswith(prefix):
+            for cls in CLASSES:
+                if f"@{cls}" in unit:
+                    return _LOG_DIR / f"{stem}-{cls}.log"
     for prefix, path in _UNIT_LOG_MAP:
         if unit.startswith(prefix):
             return path
     return None
 
 
+def _rotated_logs(log_path: Path) -> list[Path]:
+    """Uncompressed rotated copies of log_path (<name>.log-YYYYMMDD), oldest first."""
+    return sorted(log_path.parent.glob(
+        f"{log_path.name}-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]"
+    ))
+
+
 @app.get("/api/journal/{unit:path}", response_class=HTMLResponse)
 async def api_journal(request: Request, unit: str, n: int = 200):
-    """Return the last n lines of the unit's log file, falling back to journalctl."""
+    """Return the last n lines of the unit's log file in _LOG_DIR, falling back
+    to journalctl for units with no log file (yet)."""
     lines: list[str] = []
     error: str = ""
 
     log_path = _unit_log_file(unit)
+    use_journal = log_path is None
     if log_path:
+        rotated = _rotated_logs(log_path)
         try:
-            combined: list[str] = []
-            # Include the most recent uncompressed rotated file (delaycompress),
-            # giving ~1-2 nights of history in the viewer.
-            rotated = sorted(log_path.parent.glob(
-                f"{log_path.name}-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]"
-            ))
-            if rotated:
-                combined += rotated[-1].read_text(errors="replace").splitlines()
-            combined += log_path.read_text(errors="replace").splitlines()
-            lines = combined[-n:]
-        except Exception as e:
-            error = str(e)
-    else:
+            current = log_path.exists()
+        except OSError:
+            current = True   # e.g. permission denied: let the read below report it
+        if current or rotated:
+            try:
+                combined: list[str] = []
+                # Include the most recent uncompressed rotated file (delaycompress),
+                # giving ~1-2 nights of history in the viewer.
+                if rotated:
+                    combined += rotated[-1].read_text(errors="replace").splitlines()
+                if current:
+                    combined += log_path.read_text(errors="replace").splitlines()
+                lines = combined[-n:]
+            except Exception as e:
+                error = str(e)
+        else:
+            # No file yet (e.g. a doctor or scrub that hasn't run since #113):
+            # real units fall back to the journal; the "fs-orphans" pseudo-unit
+            # has no journal and just shows as empty.
+            use_journal = unit.startswith("fsbackup-")
+
+    if use_journal:
         try:
             r = subprocess.run(
                 ["journalctl", "-u", unit, "-n", str(n), "--no-pager",
@@ -1662,7 +1739,7 @@ async def api_run(request: Request, action: str, cls: str = Form(default="")):
                     "rc":         None,
                     "started_at": datetime.now(),
                     "ended_at":   None,
-                    "lines":      deque(maxlen=20),
+                    "lines":      deque(maxlen=_JOB_TAIL_LINES_FOR.get(key, _JOB_TAIL_LINES)),
                 }
             threading.Thread(target=_stream_job, args=(key, proc), daemon=True).start()
             result_ok  = True
