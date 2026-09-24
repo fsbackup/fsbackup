@@ -161,6 +161,7 @@ The `fsbackup` user runs most services. Exceptions:
   Never `>>"$LOG_FILE"` directly — the helpers keep the job running if LOG_DIR is unwritable, and drop to fsbackup for the write when run as root.
 - Prometheus metrics: write `.prom` files to node exporter textfile dir, then `mv` atomically
 - Prom file permissions: `chgrp nodeexp_txt ... 2>/dev/null || true` + `chmod 0644`
+- Reading a `.prom` file back (runner counters, doctor's scrub check): the textfile dir is writable by fsbackup and the `nodeexp_txt` group with no sticky bit, so the contents are untrusted. Read only a regular, non-symlink file under `timeout`; accept only exact `metric{labels} <number>` lines with labels matching the ID charset; never let a read value reach `$(( ))` unvalidated (bash evaluates `a[$(cmd)]` there) and use `10#` for integers; write with `mv -fT` (#121).
 - AWS CLI calls use `--profile fsbackup`
 
 ---
