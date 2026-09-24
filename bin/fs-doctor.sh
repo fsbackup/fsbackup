@@ -150,6 +150,76 @@ chgrp nodeexp_txt "$tmp" 2>/dev/null || true
 chmod 0644 "$tmp"
 mv "$tmp" "$ORPHAN_METRIC"
 
+# -----------------------------------------------------------------------------
+# ZFS SCRUB (pool-level; reads fsbackup_scrub.prom from fs-scrub-check.sh)
+# -----------------------------------------------------------------------------
+# Warns if the last scrub check failed, or if no clean scrub is on record
+# within SCRUB_MAX_AGE_DAYS (monthly timer + margin). Report only; it doesn't
+# change the target counts above.
+SCRUB_PROM="${NODEEXP_DIR}/fsbackup_scrub.prom"
+SCRUB_MAX_AGE_DAYS="${SCRUB_MAX_AGE_DAYS:-35}"
+[[ "$SCRUB_MAX_AGE_DAYS" =~ ^[0-9]+$ ]] || SCRUB_MAX_AGE_DAYS=35
+
+# The textfile dir is writable by fsbackup and the nodeexp_txt group, not only
+# by root, so the values read from the prom file are untrusted. Bash evaluates
+# array subscripts inside $(( )) and [[ -gt ]], so a value like
+# `x[$(cmd)]` would run cmd. Only values that are plain numbers reach
+# arithmetic or date; anything else makes the row a WARN.
+_is_ts()  { [[ "$1" =~ ^[0-9]+(\.[0-9]+)?$ ]]; }
+_is_int() { [[ "$1" =~ ^[0-9]+$ ]]; }
+
+echo "ZFS scrub"
+# -f: a FIFO planted in the textfile dir would otherwise hang the doctor.
+if [[ ! -f "$SCRUB_PROM" || ! -r "$SCRUB_PROM" ]]; then
+  printf "%-28s %-6s %s\n" "-" "WARN" "no scrub result yet (fsbackup-scrub.service has not finished a run)"
+else
+  NOW_TS="$(date +%s)"
+  scrub_rows=0
+  # one line per pool: <pool> <success> <last_run> <last_success> <problems>
+  while read -r pool s_ok s_run s_last s_prob; do
+    scrub_rows=$((scrub_rows + 1))
+    if [[ ! "$s_ok" =~ ^[01]$ ]] || ! _is_ts "$s_run" || ! _is_int "$s_prob" ||
+       { [[ "$s_last" != "-" ]] && ! _is_ts "$s_last"; }; then
+      printf "%-28s %-6s %s\n" "$pool" "WARN" "unreadable scrub result in ${SCRUB_PROM}"
+      continue
+    fi
+    s_run="${s_run%.*}"; s_last="${s_last%.*}"
+    if [[ "$s_ok" == "0" ]]; then
+      printf "%-28s %-6s %s\n" "$pool" "WARN" \
+        "last scrub check FAILED on $(date -d "@${s_run}" +%F 2>/dev/null || echo '?') (${s_prob} problem(s)); see journalctl -u fsbackup-scrub"
+    elif [[ "$s_last" == "-" ]]; then
+      printf "%-28s %-6s %s\n" "$pool" "WARN" "no clean scrub on record"
+    else
+      age_days=$(( (NOW_TS - 10#$s_last) / 86400 ))
+      if (( age_days > 10#$SCRUB_MAX_AGE_DAYS )); then
+        printf "%-28s %-6s %s\n" "$pool" "WARN" \
+          "last clean scrub ${age_days} days ago (> ${SCRUB_MAX_AGE_DAYS}); check fsbackup-scrub.timer"
+      else
+        printf "%-28s %-6s %s\n" "$pool" "OK" \
+          "last clean scrub $(date -d "@${s_last}" +%F) (${age_days} days ago)"
+      fi
+    fi
+  done < <(awk '
+    # pool names as zpool allows them; other lines are ignored
+    /^fsbackup_scrub_[a-z_]+\{pool="[A-Za-z][A-Za-z0-9_.:-]*"\} / {
+      name = $1; sub(/\{.*/, "", name)
+      pool = $1; sub(/^[^"]*"/, "", pool); sub(/".*/, "", pool)
+      if (!(pool in seen)) { seen[pool] = 1; order[++n] = pool }
+      v[pool, name] = $2
+    }
+    function g(p, m) { return ((p, m) in v) ? v[p, m] : "-" }
+    END {
+      for (i = 1; i <= n; i++) {
+        p = order[i]
+        print p, g(p, "fsbackup_scrub_success"), g(p, "fsbackup_scrub_last_run_seconds"),
+              g(p, "fsbackup_scrub_last_success_seconds"), g(p, "fsbackup_scrub_problems")
+      }
+    }' "$SCRUB_PROM")
+  if [[ "$scrub_rows" -eq 0 ]]; then
+    printf "%-28s %-6s %s\n" "-" "WARN" "no pool results in ${SCRUB_PROM}"
+  fi
+fi
+echo
 
 END_TS=$(date +%s.%N)
 DURATION=$(awk "BEGIN {print $END_TS - $START_TS}")

@@ -896,6 +896,7 @@ _LOG_SECTIONS = [
     ("fsbackup-doctor@class1.service",         "Doctor — class1",   "journal"),
     ("fsbackup-doctor@class2.service",         "Doctor — class2",   "journal"),
     ("fsbackup-doctor@class3.service",         "Doctor — class3",   "journal"),
+    ("fsbackup-scrub.service",                 "ZFS scrub",         "scrub.log"),
     ("fs-orphans",                             "Orphans",           "fs-orphans.log"),
 ]
 
@@ -1506,7 +1507,7 @@ _UNIT_LOG_MAP = [
     ("fsbackup-s3-export",   _LOG_DIR / "s3-export.log"),
     ("fsbackup-retention",   _LOG_DIR / "retention.log"),
     ("fs-orphans",           _LOG_DIR / "fs-orphans.log"),
-    ("fsbackup-scrub",       _LOG_DIR / "s3-export.log"),  # scrub logs to s3 file for now
+    ("fsbackup-scrub",       _LOG_DIR / "scrub.log"),
 ]
 
 def _unit_log_file(unit: str) -> Path | None:

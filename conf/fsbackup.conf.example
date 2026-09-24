@@ -32,6 +32,15 @@ KEEP_MONTHLY=12
 KEEP_ANNUAL=0
 
 # =============================================================================
+# ZFS scrub — fs-scrub-check.sh (monthly via fsbackup-scrub.timer, as root)
+# Scrubs ZFS_POOL (above; default: the pool holding SNAPSHOT_ROOT) and fails
+# the unit on any error. The doctor warns if the last clean scrub is older than
+# SCRUB_MAX_AGE_DAYS or the last scrub check failed.
+# =============================================================================
+
+# SCRUB_MAX_AGE_DAYS=35
+
+# =============================================================================
 # S3 export
 # =============================================================================
 

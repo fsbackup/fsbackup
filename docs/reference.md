@@ -148,7 +148,7 @@ the rest are set in the timer unit files.
 |---|---|---|
 | 1st ~03:00 | `fsbackup-runner-monthly@class1` | Monthly rsync + ZFS snapshot — class1 |
 | 1st ~04:00 | `fsbackup-runner-monthly@class3` | Monthly rsync + ZFS snapshot — class3 |
-| 5th 03:00 | `fsbackup-scrub` | ZFS pool scrub |
+| 5th 03:00 | `fsbackup-scrub` | ZFS pool scrub + health check (`fs-scrub-check.sh`, root); the unit fails on any pool error |
 
 > `fsbackup-runner-monthly@class2` is intentionally disabled (`CLASS2_MONTHLY_SCHEDULE`
 > commented out). class2 retains 14 dailies and 8 weeklies, sufficient for config data.
@@ -171,7 +171,7 @@ the rest are set in the timer unit files.
 | `/var/lib/fsbackup/` | fsbackup user home |
 | `/var/lib/fsbackup/.ssh/id_ed25519_backup` | Private key used to pull from remotes |
 | `/var/lib/fsbackup/.aws/credentials` | AWS credentials (profile `fsbackup`) |
-| `/var/lib/fsbackup/log/` | Log files (per-class runner logs, retention, s3-export, orphans) |
+| `/var/lib/fsbackup/log/` | Log files (per-class runner logs, retention, s3-export, scrub, orphans) |
 | `/backup/snapshots/` | ZFS snapshot root (`SNAPSHOT_ROOT`) |
 | `/var/lib/node_exporter/textfile_collector/` | Prometheus metrics output |
 | `/etc/sudoers.d/fsbackup-zfs-destroy` | NOPASSWD `zfs destroy -r <root>/*/*` (web UI orphan-delete) |
@@ -199,6 +199,9 @@ Summary of the most useful series:
 | `fsbackup_ssh_host_key_present{host,fingerprint}` | 1 if the host's SSH key is trusted |
 | `fsbackup_s3_last_success` / `fsbackup_s3_last_exit_code` | Last S3 run time / result |
 | `fsbackup_s3_target_last_upload{tier,class,target}` | Last successful S3 upload per target |
+| `fsbackup_scrub_success{pool}` | 1 if the last scrub check found no problems (alert if 0) |
+| `fsbackup_scrub_last_success_seconds{pool}` | Timestamp of the last clean scrub (alert if older than ~35 days) |
+| `fsbackup_scrub_problems{pool}` | Problems found by the last scrub check |
 
 ---
 

@@ -92,7 +92,9 @@ flowchart TD
 - **Prometheus metrics**: every script emits `.prom` textfile-collector files; a Grafana
   dashboard is included.
 - **Doctor**: pre-run health check for SSH reachability, source-path existence, orphan
-  datasets, and missing datasets.
+  datasets, missing datasets, and a stale or failed pool scrub.
+- **Monthly scrub check**: `fs-scrub-check.sh` scrubs the backup pool, then fails the unit
+  if the pool is degraded or the scrub found errors or repaired data.
 - **Web UI**: FastAPI + HTMX dashboard for monitoring, snapshot browsing, on-demand runs,
   restores, and an S3 bucket browser.
 
@@ -179,6 +181,23 @@ All scripts write `.prom` files to the node_exporter textfile collector director
 | `fsbackup_s3_duration_seconds` | Duration of the S3 export run |
 | `fsbackup_s3_target_last_upload{tier,class,target}` | Timestamp of last successful upload per target |
 | `fsbackup_s3_target_last_failure{tier,class,target}` | Timestamp of last upload failure per target |
+
+**Scrub metrics** (`fsbackup_scrub.prom`, written by `fs-scrub-check.sh`):
+
+| Metric | Description |
+|--------|-------------|
+| `fsbackup_scrub_last_run_seconds{pool}` | Unix timestamp when the last scrub check finished |
+| `fsbackup_scrub_last_success_seconds{pool}` | Unix timestamp of the last check that found no problems (kept across failed runs) |
+| `fsbackup_scrub_success{pool}` | 1 if the last check found no problems, 0 otherwise |
+| `fsbackup_scrub_problems{pool}` | Problems found: pool/vdev state, error counters, repairs, data errors, scrub failure |
+| `fsbackup_scrub_duration_seconds{pool}` | Duration of the last check, including the scrub |
+| `fsbackup_scrub_scan_errors{pool}` | Errors on the `zpool status` scan line |
+| `fsbackup_scrub_repaired_bytes{pool}` | Bytes the scrub repaired (approximate; `zpool status` rounds it) |
+| `fsbackup_scrub_device_errors{pool}` | Sum of READ/WRITE/CKSUM counters over all vdevs |
+| `fsbackup_scrub_data_errors{pool}` | Permanent data errors reported by `zpool status` |
+
+Detail metrics that couldn't be read (for example when the pool is missing) are left out
+rather than written as 0.
 
 A Grafana dashboard is included at `conf/grafana-dashboard.json`. The datasource UID in
 that file is instance-specific and must be remapped on import.
